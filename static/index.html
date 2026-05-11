@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YTArchive — channel archival</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,400&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="glow-layer" aria-hidden="true">
+    <div class="glow glow-1"></div>
+    <div class="glow glow-2"></div>
+    <div class="glow glow-3"></div>
+  </div>
+
+  <main class="page">
+    <header class="masthead">
+      <p class="eyebrow">YTArchive · v1</p>
+      <h1 class="display">
+        A reading-room for <em>channel archival</em>.
+      </h1>
+      <p class="lede">
+        Scrape a YouTube channel, prune the fluff with SponsorBlock,
+        and save the rest. Everything runs locally — your downloads
+        never leave the machine.
+      </p>
+    </header>
+
+    <section class="section" aria-labelledby="src-title">
+      <div class="section-head">
+        <span class="marker">Source.</span>
+        <h2 id="src-title" class="section-title">Channel or playlist URL</h2>
+      </div>
+      <form id="scrape-form" class="source-row" autocomplete="off">
+        <input
+          id="channel-url"
+          name="channel-url"
+          type="text"
+          spellcheck="false"
+          placeholder="https://www.youtube.com/@channel  ·  or any playlist URL"
+        />
+        <button type="submit" class="btn btn-primary" id="scrape-btn">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3-3"></path></svg>
+          Fetch
+        </button>
+      </form>
+      <p class="hint" id="scrape-hint">
+        Videos are pulled in batches of 50. Use the page arrows to walk
+        a large channel without loading thousands of thumbnails at once.
+      </p>
+    </section>
+
+    <section class="section channel-meta" id="channel-meta" hidden>
+      <div class="meta-grid">
+        <div class="meta-cell">
+          <span class="label">Channel</span>
+          <span class="meta-value" id="meta-channel">—</span>
+        </div>
+        <div class="meta-cell">
+          <span class="label">Page</span>
+          <span class="meta-value mono" id="meta-page">1</span>
+        </div>
+        <div class="meta-cell">
+          <span class="label">On this page</span>
+          <span class="meta-value mono" id="meta-count">0</span>
+        </div>
+        <div class="meta-cell">
+          <span class="label">Selected</span>
+          <span class="meta-value mono" id="meta-selected">0</span>
+        </div>
+      </div>
+      <div class="meta-actions">
+        <button class="btn btn-ghost" id="prev-page" type="button" disabled>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
+          Previous
+        </button>
+        <button class="btn btn-ghost" id="next-page" type="button">
+          Next
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg>
+        </button>
+        <span class="spacer"></span>
+        <button class="btn btn-secondary" id="select-page" type="button">Select page</button>
+        <button class="btn btn-secondary" id="clear-selection" type="button">Clear</button>
+        <button class="btn btn-primary" id="queue-selected" type="button" disabled>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+          Queue selected
+        </button>
+      </div>
+    </section>
+
+    <section class="section grid-section" id="grid-section" hidden>
+      <div class="video-grid" id="video-grid"></div>
+      <div class="grid-empty" id="grid-empty" hidden>
+        <p class="muted">No videos on this page.</p>
+      </div>
+    </section>
+
+    <section class="section config-section" aria-labelledby="cfg-title">
+      <div class="section-head">
+        <span class="marker">Configuration.</span>
+        <h2 id="cfg-title" class="section-title">What to <em>cut</em>, and at what fidelity.</h2>
+      </div>
+
+      <div class="config-grid">
+        <div class="panel">
+          <p class="label">SponsorBlock · segments to remove</p>
+          <div class="check-grid" id="sb-grid">
+            <!-- populated by JS -->
+          </div>
+          <p class="hint">
+            <em>Algorithm.</em> Segments are looked up against the public
+            SponsorBlock database, then cut from the muxed file by
+            ffmpeg's chapter editor. Original timestamps are preserved
+            in metadata.
+          </p>
+        </div>
+
+        <div class="panel">
+          <p class="label">Quality · format preset</p>
+          <div class="seg" role="radiogroup" id="quality-seg">
+            <!-- populated by JS -->
+          </div>
+          <p class="hint" id="quality-hint">
+            1080p MP4 is the default — a balance of fidelity and disk.
+            Audio presets skip video streams entirely.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section dest-section">
+      <div class="dest-row">
+        <div>
+          <p class="label">Destination</p>
+          <p class="mono dest-path" id="dest-path">./downloads</p>
+        </div>
+        <form id="dest-form" class="dest-edit">
+          <input id="dest-input" type="text" placeholder="absolute path · ~/Videos/YT" spellcheck="false" />
+          <button type="submit" class="btn btn-secondary">Save</button>
+        </form>
+      </div>
+      <p class="hint" id="env-hint"></p>
+    </section>
+
+    <section class="section queue-section" aria-labelledby="q-title">
+      <div class="section-head">
+        <span class="marker">Queue.</span>
+        <h2 id="q-title" class="section-title">
+          <span id="q-count">0</span>
+          <span class="muted-inline" id="q-meta">items</span>
+        </h2>
+        <div class="queue-controls">
+          <button class="btn btn-secondary" id="q-start" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>
+            Start
+          </button>
+          <button class="btn btn-ghost" id="q-pause" type="button" hidden>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+            Pause
+          </button>
+          <button class="btn btn-ghost" id="q-clear" type="button">Clear finished</button>
+        </div>
+      </div>
+      <div class="queue-list" id="queue-list">
+        <p class="muted queue-empty" id="queue-empty">
+          Nothing queued. Add videos from the grid above to populate.
+        </p>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>
+        <em>Privacy.</em> No telemetry, no remote API beyond YouTube
+        and SponsorBlock. <em>Engine.</em> yt-dlp handles fetching;
+        ffmpeg handles muxing and chapter edits. <em>Reach.</em> The
+        bridge server only binds to <span class="mono">127.0.0.1</span>.
+      </p>
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
