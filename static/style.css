@@ -595,6 +595,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   background: rgba(68, 64, 60, 0.4);
   overflow: hidden;
   border-radius: 1px;
+  position: relative;
 }
 .qprogress .bar {
   height: 100%;
@@ -604,6 +605,30 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .qitem.completed .qprogress .bar { background: var(--sage); }
 .qitem.failed .qprogress .bar { background: var(--err-fg); }
+
+.qprogress.indeterminate .bar {
+  width: 40% !important;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--amber-bright) 50%,
+    transparent 100%
+  );
+  animation: qprogress-sweep 1.4s ease-in-out infinite;
+  transition: none;
+}
+@keyframes qprogress-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+.status-verb {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 0.8125rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
 
 .qactions { display: flex; gap: 0.35rem; }
 .qactions button {
@@ -652,3 +677,129 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .toast.error { border-color: var(--err-fg); color: var(--err-fg); background: var(--err-bg); }
 .toast.notice { border-color: var(--notice-fg); color: var(--notice-fg); background: var(--notice-bg); }
+
+/* --- grid filter row ----------------------------------------------------- */
+
+.grid-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.grid-filter-row input[type="text"] {
+  flex: 1;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.filter-count {
+  font-size: 0.6875rem;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+
+/* --- advanced settings grid --------------------------------------------- */
+
+.advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+@media (max-width: 760px) {
+  .advanced-grid { grid-template-columns: 1fr; }
+}
+
+.concurrency-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.concurrency-label {
+  font-size: 0.875rem;
+  color: var(--text-body);
+}
+#concurrency-input {
+  font-family: var(--mono);
+  font-size: 0.875rem;
+  color: var(--text-high);
+  background: rgba(12, 10, 8, 0.8);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.5rem 0.6rem;
+  outline: none;
+  width: 4.5rem;
+  text-align: center;
+}
+#concurrency-input:focus { border-color: var(--text-mute); }
+
+.archive-check { margin-top: 0.25rem; }
+
+/* --- metadata fixer ------------------------------------------------------ */
+
+.mf-status {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text-mute);
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  background: rgba(20, 17, 14, 0.6);
+  margin-bottom: 0.75rem;
+}
+
+.mf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.mf-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: rgba(20, 17, 14, 0.5);
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+}
+.mf-row.ok     { border-color: var(--border-soft); opacity: 0.65; }
+.mf-row.needs  { border-color: var(--amber); }
+.mf-row.fixed  { border-color: var(--sage); }
+.mf-row.failed { border-color: var(--err-fg); }
+.mf-row.no-id  { opacity: 0.5; }
+
+.mf-name {
+  font-size: 0.75rem;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mf-tags { display: inline-flex; gap: 0.35rem; flex-wrap: wrap; }
+.mf-chip {
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: 2px;
+  padding: 0.1rem 0.4rem;
+}
+.mf-row.fixed .mf-chip { color: var(--sage); border-color: var(--sage); opacity: 0.7; }
+.mf-row.failed .mf-chip { color: var(--err-fg); border-color: var(--err-fg); }
+
+.mf-verb { color: var(--text-body); white-space: nowrap; }
+.mf-row.ok .mf-verb     { color: var(--text-mute); }
+.mf-row.fixed .mf-verb  { color: var(--sage); }
+.mf-row.failed .mf-verb { color: var(--err-fg); }
+
+/* --- datalist (visual cue only, browser styles the dropdown) ------------- */
+input[list]::-webkit-calendar-picker-indicator {
+  opacity: 0.4;
+  cursor: pointer;
+}

@@ -12,7 +12,10 @@ import os
 import queue
 import re
 import shutil
+import signal
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -21,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_from_directory
+
+import metadata_fixer
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +37,14 @@ STATIC_DIR = ROOT / "static"
 DEFAULT_DOWNLOAD_DIR = ROOT / "downloads"
 DEFAULT_DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+STATE_DIR = Path(os.environ.get("YTARCHIVE_STATE_DIR") or (Path.home() / ".ytarchive"))
+STATE_FILE = STATE_DIR / "state.json"
+STATE_VERSION = 1
+HISTORY_MAX = 10
+
 SCRAPE_PAGE_SIZE = 50
+
+IS_WINDOWS = os.name == "nt"
 
 SPONSORBLOCK_CATEGORIES = {
     "sponsor",
@@ -79,6 +91,8 @@ QUALITY_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
+MAX_CONCURRENCY = 4
+
 
 # ---------------------------------------------------------------------------
 # Queue data model
@@ -107,7 +121,40 @@ class QueueItem:
 
 
 # ---------------------------------------------------------------------------
-# Manager: thread-safe queue + background worker + event broadcaster
+# Persistence
+# ---------------------------------------------------------------------------
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".state-", suffix=".json", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _load_state() -> dict[str, Any]:
+    if not STATE_FILE.exists():
+        return {}
+    try:
+        with STATE_FILE.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Manager: thread-safe queue + worker pool + event broadcaster
 # ---------------------------------------------------------------------------
 
 
@@ -120,13 +167,113 @@ class QueueManager:
         self._listeners: list[queue.Queue[str]] = []
         self._listeners_lock = threading.Lock()
         self._running = False
-        self._current: QueueItem | None = None
-        self._current_proc: subprocess.Popen | None = None
+        self._active_procs: dict[str, subprocess.Popen] = {}
+        self._dispatched: set[str] = set()
         self._download_dir: Path = DEFAULT_DOWNLOAD_DIR
-        self._worker = threading.Thread(target=self._run, daemon=True)
-        self._worker.start()
+        self._concurrency: int = 1
+        self._embed_metadata: bool = True
+        self._embed_thumbnail: bool = True
+        self._embed_chapters: bool = True
+        self._use_archive: bool = False
+        self._history: list[str] = []
+        self._last_quality: str = "1080p"
+        self._last_sponsorblock: list[str] = ["sponsor", "selfpromo"]
+        self._persist_dirty = False
+        self._load_persisted()
+        self._dispatcher = threading.Thread(target=self._dispatch_loop, daemon=True)
+        self._dispatcher.start()
 
-    # ----- public api --------------------------------------------------
+    # ----- persistence -------------------------------------------------
+
+    def _load_persisted(self) -> None:
+        data = _load_state()
+        if not data:
+            return
+        dl = data.get("download_dir")
+        if isinstance(dl, str):
+            try:
+                p = Path(dl).expanduser()
+                p.mkdir(parents=True, exist_ok=True)
+                self._download_dir = p.resolve()
+            except OSError:
+                pass
+        try:
+            self._concurrency = max(1, min(MAX_CONCURRENCY, int(data.get("concurrency", 1))))
+        except (TypeError, ValueError):
+            self._concurrency = 1
+        self._embed_metadata = bool(data.get("embed_metadata", True))
+        self._embed_thumbnail = bool(data.get("embed_thumbnail", True))
+        self._embed_chapters = bool(data.get("embed_chapters", True))
+        self._use_archive = bool(data.get("use_archive", False))
+        hist = data.get("history") or []
+        if isinstance(hist, list):
+            self._history = [h for h in hist if isinstance(h, str)][:HISTORY_MAX]
+        lq = data.get("last_quality")
+        if isinstance(lq, str) and lq in QUALITY_PRESETS:
+            self._last_quality = lq
+        lsb = data.get("last_sponsorblock")
+        if isinstance(lsb, list):
+            self._last_sponsorblock = [c for c in lsb if c in SPONSORBLOCK_CATEGORIES]
+        items = data.get("queue") or []
+        if isinstance(items, list):
+            for raw in items:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    item = QueueItem(
+                        id=str(raw.get("id") or uuid.uuid4()),
+                        video_id=str(raw["video_id"]),
+                        url=str(raw["url"]),
+                        title=str(raw.get("title") or raw["video_id"]),
+                        thumbnail=raw.get("thumbnail"),
+                        duration=raw.get("duration"),
+                        quality=str(raw.get("quality") or self._last_quality),
+                        sponsorblock=[c for c in (raw.get("sponsorblock") or []) if c in SPONSORBLOCK_CATEGORIES],
+                        status=str(raw.get("status") or "pending"),
+                        progress=float(raw.get("progress") or 0.0),
+                        speed=raw.get("speed"),
+                        eta=raw.get("eta"),
+                        message=raw.get("message"),
+                        output_file=raw.get("output_file"),
+                        added_at=float(raw.get("added_at") or time.time()),
+                        started_at=raw.get("started_at"),
+                        finished_at=raw.get("finished_at"),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                # interrupted downloads come back as pending so they can resume
+                if item.status == "downloading":
+                    item.status = "pending"
+                    item.progress = 0.0
+                    item.speed = None
+                    item.eta = None
+                    item.message = "Restored — will resume"
+                self._items[item.id] = item
+                self._order.append(item.id)
+
+    def _persist_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "version": STATE_VERSION,
+                "download_dir": str(self._download_dir),
+                "concurrency": self._concurrency,
+                "embed_metadata": self._embed_metadata,
+                "embed_thumbnail": self._embed_thumbnail,
+                "embed_chapters": self._embed_chapters,
+                "use_archive": self._use_archive,
+                "history": list(self._history),
+                "last_quality": self._last_quality,
+                "last_sponsorblock": list(self._last_sponsorblock),
+                "queue": [asdict(self._items[i]) for i in self._order],
+            }
+
+    def _persist(self) -> None:
+        try:
+            _atomic_write_json(STATE_FILE, self._persist_snapshot())
+        except OSError as exc:
+            print(f"[ytarchive] could not persist state: {exc}", file=sys.stderr)
+
+    # ----- settings ----------------------------------------------------
 
     def set_download_dir(self, path: str) -> Path:
         p = Path(path).expanduser().resolve()
@@ -134,12 +281,82 @@ class QueueManager:
         with self._lock:
             self._download_dir = p
         self._broadcast({"type": "settings", "download_dir": str(p)})
+        self._persist()
         return p
+
+    def set_concurrency(self, n: int) -> int:
+        n = max(1, min(MAX_CONCURRENCY, int(n)))
+        with self._lock:
+            self._concurrency = n
+        self._broadcast({"type": "settings", "concurrency": n})
+        self._persist()
+        self._wake.set()
+        return n
+
+    def set_embed(self, metadata: bool, thumbnail: bool, chapters: bool) -> None:
+        with self._lock:
+            self._embed_metadata = bool(metadata)
+            self._embed_thumbnail = bool(thumbnail)
+            self._embed_chapters = bool(chapters)
+        self._broadcast({
+            "type": "settings",
+            "embed_metadata": metadata,
+            "embed_thumbnail": thumbnail,
+            "embed_chapters": chapters,
+        })
+        self._persist()
+
+    def set_use_archive(self, enabled: bool) -> None:
+        with self._lock:
+            self._use_archive = bool(enabled)
+        self._broadcast({"type": "settings", "use_archive": bool(enabled)})
+        self._persist()
+
+    def push_history(self, url: str) -> None:
+        url = (url or "").strip()
+        if not url:
+            return
+        with self._lock:
+            self._history = [url] + [h for h in self._history if h != url]
+            self._history = self._history[:HISTORY_MAX]
+        self._broadcast({"type": "settings", "history": list(self._history)})
+        self._persist()
+
+    def remember_choices(self, quality: str | None, sponsorblock: list[str] | None) -> None:
+        changed = False
+        with self._lock:
+            if quality and quality in QUALITY_PRESETS and quality != self._last_quality:
+                self._last_quality = quality
+                changed = True
+            if sponsorblock is not None:
+                clean = sorted([c for c in sponsorblock if c in SPONSORBLOCK_CATEGORIES])
+                if clean != sorted(self._last_sponsorblock):
+                    self._last_sponsorblock = clean
+                    changed = True
+        if changed:
+            self._persist()
 
     @property
     def download_dir(self) -> Path:
         with self._lock:
             return self._download_dir
+
+    def settings(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "download_dir": str(self._download_dir),
+                "concurrency": self._concurrency,
+                "max_concurrency": MAX_CONCURRENCY,
+                "embed_metadata": self._embed_metadata,
+                "embed_thumbnail": self._embed_thumbnail,
+                "embed_chapters": self._embed_chapters,
+                "use_archive": self._use_archive,
+                "history": list(self._history),
+                "last_quality": self._last_quality,
+                "last_sponsorblock": list(self._last_sponsorblock),
+            }
+
+    # ----- queue mutation ---------------------------------------------
 
     def add(
         self,
@@ -178,6 +395,8 @@ class QueueManager:
         for item in added:
             self._broadcast({"type": "queued", "item": asdict(item)})
         if added:
+            self.remember_choices(quality, clean_sb)
+            self._persist()
             self._wake.set()
         return added
 
@@ -192,6 +411,27 @@ class QueueManager:
                 self._order.remove(item_id)
             self._items.pop(item_id, None)
         self._broadcast({"type": "removed", "id": item_id})
+        self._persist()
+        return True
+
+    def retry(self, item_id: str) -> bool:
+        with self._lock:
+            item = self._items.get(item_id)
+            if not item:
+                return False
+            if item.status not in {"failed", "cancelled"}:
+                return False
+            item.status = "pending"
+            item.progress = 0.0
+            item.speed = None
+            item.eta = None
+            item.message = None
+            item.started_at = None
+            item.finished_at = None
+            snap = asdict(item)
+        self._broadcast({"type": "update", "item": snap})
+        self._persist()
+        self._wake.set()
         return True
 
     def clear_finished(self) -> int:
@@ -208,18 +448,24 @@ class QueueManager:
             self._order = keep
         if removed:
             self._broadcast({"type": "cleared"})
+            self._persist()
         return removed
 
-    def cancel_current(self) -> bool:
+    def cancel_current(self) -> int:
         with self._lock:
-            proc = self._current_proc
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:
-                return False
-            return True
-        return False
+            procs = list(self._active_procs.values())
+        cancelled = 0
+        for proc in procs:
+            if _terminate_proc(proc):
+                cancelled += 1
+        return cancelled
+
+    def cancel_item(self, item_id: str) -> bool:
+        with self._lock:
+            proc = self._active_procs.get(item_id)
+        if proc is None:
+            return False
+        return _terminate_proc(proc)
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -263,69 +509,94 @@ class QueueManager:
             except queue.Full:
                 pass
 
-    # ----- worker loop -------------------------------------------------
+    # ----- dispatcher + workers ----------------------------------------
 
-    def _next_pending(self) -> QueueItem | None:
-        with self._lock:
-            if not self._running:
-                return None
-            for iid in self._order:
-                it = self._items[iid]
-                if it.status == "pending":
-                    return it
-            return None
-
-    def _run(self) -> None:
+    def _dispatch_loop(self) -> None:
         while True:
             self._wake.wait()
             self._wake.clear()
             while True:
-                item = self._next_pending()
-                if not item:
+                spawned = False
+                with self._lock:
+                    if not self._running:
+                        break
+                    if len(self._active_procs) + len(self._dispatched) >= self._concurrency:
+                        break
+                    next_item: QueueItem | None = None
+                    for iid in self._order:
+                        it = self._items[iid]
+                        if (
+                            it.status == "pending"
+                            and iid not in self._active_procs
+                            and iid not in self._dispatched
+                        ):
+                            next_item = it
+                            break
+                    if next_item is None:
+                        break
+                    self._dispatched.add(next_item.id)
+                    spawned = True
+                if spawned and next_item is not None:
+                    t = threading.Thread(target=self._process, args=(next_item,), daemon=True)
+                    t.start()
+                if not spawned:
                     break
-                self._process(item)
 
     def _process(self, item: QueueItem) -> None:
         with self._lock:
             item.status = "downloading"
             item.started_at = time.time()
-            self._current = item
         self._broadcast({"type": "update", "item": asdict(item)})
 
         cmd = self._build_command(item)
+        popen_kwargs: dict[str, Any] = dict(
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if IS_WINDOWS:
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
+            proc = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError:
+            with self._lock:
+                self._dispatched.discard(item.id)
             self._finish(item, "failed", "yt-dlp not found on PATH")
+            self._wake.set()
             return
         with self._lock:
-            self._current_proc = proc
+            self._active_procs[item.id] = proc
+            self._dispatched.discard(item.id)
 
         last_emit = 0.0
         assert proc.stdout is not None
-        for raw in proc.stdout:
-            line = raw.rstrip("\n")
-            self._parse_progress(item, line)
-            now = time.time()
-            if now - last_emit > 0.2:
-                self._broadcast({"type": "progress", "item": asdict(item)})
-                last_emit = now
+        try:
+            for raw in proc.stdout:
+                line = raw.rstrip("\n")
+                self._parse_progress(item, line)
+                now = time.time()
+                if now - last_emit > 0.2:
+                    self._broadcast({"type": "progress", "item": asdict(item)})
+                    last_emit = now
+        except Exception:
+            pass
         rc = proc.wait()
         with self._lock:
-            self._current_proc = None
-            self._current = None
+            self._active_procs.pop(item.id, None)
         if rc == 0:
             self._finish(item, "completed", "Saved")
-        elif rc < 0:
+        elif rc < 0 or (IS_WINDOWS and rc in (3221225786, -1073741510)):
+            # CTRL_BREAK/CTRL_C terminations on Windows surface as 0xC000013A
             self._finish(item, "cancelled", "Stopped")
         else:
             self._finish(item, "failed", item.message or f"yt-dlp exited {rc}")
+        self._wake.set()
 
     def _finish(self, item: QueueItem, status: str, message: str) -> None:
         with self._lock:
@@ -335,6 +606,7 @@ class QueueManager:
             if status == "completed":
                 item.progress = 100.0
         self._broadcast({"type": "update", "item": asdict(item)})
+        self._persist()
 
     # ----- yt-dlp command + parsing ------------------------------------
 
@@ -350,23 +622,34 @@ class QueueManager:
             "-o", out_template,
             "--print", "after_move:filepath:%(filepath)s",
         ]
-        if preset.get("audio_only"):
-            cmd += [
-                "-f", preset["format"],
-                "-x",
-                "--audio-format", preset["audio_format"],
-            ]
-        else:
-            cmd += ["-f", preset["format"]]
-            if "merge_output_format" in preset:
-                cmd += ["--merge-output-format", preset["merge_output_format"]]
-        if item.sponsorblock:
-            cmd += ["--sponsorblock-remove", ",".join(item.sponsorblock)]
+        with self._lock:
+            audio_only = bool(preset.get("audio_only"))
+            if audio_only:
+                cmd += [
+                    "-f", preset["format"],
+                    "-x",
+                    "--audio-format", preset["audio_format"],
+                ]
+            else:
+                cmd += ["-f", preset["format"]]
+                if "merge_output_format" in preset:
+                    cmd += ["--merge-output-format", preset["merge_output_format"]]
+            if item.sponsorblock:
+                cmd += ["--sponsorblock-remove", ",".join(item.sponsorblock)]
+            if self._embed_metadata:
+                cmd += ["--embed-metadata"]
+            if self._embed_thumbnail:
+                cmd += ["--embed-thumbnail"]
+            if self._embed_chapters and not audio_only:
+                cmd += ["--embed-chapters"]
+            if self._use_archive:
+                archive_path = self._download_dir / "archive.txt"
+                cmd += ["--download-archive", str(archive_path)]
         cmd.append(item.url)
         return cmd
 
     _PROGRESS_RE = re.compile(
-        r"\[download\]\s+(?P<pct>[\d.]+)%\s+of\s+~?\s*(?P<size>[\d.]+\w+)"
+        r"\[download\]\s+(?P<pct>[\d.]+)%(?:\s+of\s+~?\s*(?P<size>[\d.]+\w+))?"
         r"(?:\s+at\s+(?P<speed>[^\s]+))?"
         r"(?:\s+ETA\s+(?P<eta>[\d:]+))?"
     )
@@ -399,6 +682,14 @@ class QueueManager:
             with self._lock:
                 item.message = "Extracting audio"
             return
+        if "[EmbedThumbnail]" in line:
+            with self._lock:
+                item.message = "Embedding thumbnail"
+            return
+        if "[Metadata]" in line:
+            with self._lock:
+                item.message = "Writing metadata"
+            return
         if "Deleting original" in line or "[ModifyChapters]" in line:
             with self._lock:
                 item.message = "Cutting segments"
@@ -409,7 +700,154 @@ class QueueManager:
                 item.message = err.group(1)[:200]
 
 
+def _terminate_proc(proc: subprocess.Popen) -> bool:
+    if proc.poll() is not None:
+        return False
+    try:
+        if IS_WINDOWS:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                proc.terminate()
+        return True
+    except (OSError, ValueError):
+        try:
+            proc.terminate()
+            return True
+        except Exception:
+            return False
+
+
 manager = QueueManager()
+
+
+# ---------------------------------------------------------------------------
+# Metadata fixer service
+# ---------------------------------------------------------------------------
+
+
+class MetadataFixerService:
+    """Runs metadata_fixer in a background thread, broadcasting per-file
+    progress over the QueueManager's SSE channel so the UI can subscribe.
+    """
+
+    def __init__(self, mgr: QueueManager) -> None:
+        self._mgr = mgr
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._cancel = threading.Event()
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def scan(self, root: Path) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for path in metadata_fixer.walk_candidates(root):
+            missing = metadata_fixer.diagnose_file(path)
+            vid = metadata_fixer.extract_video_id(path)
+            out.append({
+                "path": str(path),
+                "name": path.name,
+                "rel": str(path.relative_to(root)) if path.is_relative_to(root) else path.name,
+                "video_id": vid,
+                "missing": missing,
+                "ok": not missing,
+            })
+        return out
+
+    def start_fix(self, root: Path, dry_run: bool = False) -> bool:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return False
+            self._cancel.clear()
+            self._thread = threading.Thread(
+                target=self._run, args=(root, dry_run), daemon=True
+            )
+            self._thread.start()
+        return True
+
+    def cancel(self) -> bool:
+        if self.is_running():
+            self._cancel.set()
+            return True
+        return False
+
+    def _broadcast(self, payload: dict[str, Any]) -> None:
+        self._mgr._broadcast({"type": "metadata", **payload})
+
+    def _run(self, root: Path, dry_run: bool) -> None:
+        candidates = list(metadata_fixer.walk_candidates(root))
+        total = len(candidates)
+        self._broadcast({"phase": "started", "total": total, "dry_run": dry_run})
+        counts: dict[str, int] = {"ok": 0, "fixed": 0, "needs": 0, "no-id": 0, "failed": 0}
+        for index, path in enumerate(candidates, start=1):
+            if self._cancel.is_set():
+                self._broadcast({"phase": "cancelled", "counts": counts})
+                return
+            self._broadcast({
+                "phase": "progress",
+                "index": index,
+                "total": total,
+                "name": path.name,
+            })
+            try:
+                res = metadata_fixer.fix_file(path, dry_run=dry_run)
+            except Exception as exc:  # defensive
+                counts["failed"] += 1
+                self._broadcast({
+                    "phase": "result",
+                    "index": index,
+                    "name": path.name,
+                    "status": "failed",
+                    "missing": [],
+                    "detail": str(exc),
+                })
+                continue
+            counts[res.status] = counts.get(res.status, 0) + 1
+            self._broadcast({
+                "phase": "result",
+                "index": index,
+                "name": path.name,
+                "status": res.status,
+                "missing": res.missing,
+                "detail": res.detail,
+            })
+        self._broadcast({"phase": "done", "counts": counts})
+
+
+metadata_service = MetadataFixerService(manager)
+
+
+# ---------------------------------------------------------------------------
+# Reveal helper
+# ---------------------------------------------------------------------------
+
+
+def _reveal_path(target: Path) -> None:
+    """Open the OS file manager focused on `target` (or its parent if a file)."""
+    if not target.exists():
+        raise FileNotFoundError(str(target))
+    try:
+        if IS_WINDOWS:
+            if target.is_file():
+                subprocess.Popen(["explorer", f"/select,{target}"])
+            else:
+                subprocess.Popen(["explorer", str(target)])
+        elif sys.platform == "darwin":
+            if target.is_file():
+                subprocess.Popen(["open", "-R", str(target)])
+            else:
+                subprocess.Popen(["open", str(target)])
+        else:
+            opener = "xdg-open"
+            folder = target if target.is_dir() else target.parent
+            subprocess.Popen([opener, str(folder)])
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"could not open file manager: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +995,8 @@ def api_scrape() -> Response:
         return jsonify({"error": str(exc)}), 500
     result["page"] = page
     result["page_size"] = SCRAPE_PAGE_SIZE
+    if page == 1:
+        manager.push_history(url)
     return jsonify(result)
 
 
@@ -594,6 +1034,16 @@ def api_queue_remove() -> Response:
     return jsonify({"ok": ok})
 
 
+@app.route("/api/queue/retry", methods=["POST"])
+def api_queue_retry() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    item_id = data.get("id")
+    if not item_id:
+        return jsonify({"error": "id is required"}), 400
+    ok = manager.retry(item_id)
+    return jsonify({"ok": ok})
+
+
 @app.route("/api/queue/clear", methods=["POST"])
 def api_queue_clear() -> Response:
     removed = manager.clear_finished()
@@ -614,28 +1064,112 @@ def api_queue_pause() -> Response:
 
 @app.route("/api/queue/cancel", methods=["POST"])
 def api_queue_cancel() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    item_id = data.get("id")
+    if item_id:
+        cancelled = manager.cancel_item(item_id)
+        return jsonify({"cancelled": bool(cancelled)})
     cancelled = manager.cancel_current()
     return jsonify({"cancelled": cancelled})
+
+
+@app.route("/api/queue/reveal", methods=["POST"])
+def api_queue_reveal() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    item_id = data.get("id")
+    target: Path | None = None
+    if item_id:
+        for it in manager.snapshot():
+            if it["id"] == item_id and it.get("output_file"):
+                p = Path(str(it["output_file"]))
+                if p.exists():
+                    target = p
+                    break
+    if target is None:
+        target = manager.download_dir
+    try:
+        _reveal_path(target)
+    except (FileNotFoundError, RuntimeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "path": str(target)})
 
 
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings() -> Response:
     if request.method == "POST":
         data = request.get_json(force=True, silent=True) or {}
-        new_dir = data.get("download_dir")
-        if new_dir:
+        if "download_dir" in data and data["download_dir"]:
             try:
-                manager.set_download_dir(new_dir)
+                manager.set_download_dir(data["download_dir"])
             except Exception as exc:
                 return jsonify({"error": str(exc)}), 400
+        if "concurrency" in data:
+            try:
+                manager.set_concurrency(int(data["concurrency"]))
+            except (TypeError, ValueError):
+                return jsonify({"error": "concurrency must be an integer"}), 400
+        if any(k in data for k in ("embed_metadata", "embed_thumbnail", "embed_chapters")):
+            cur = manager.settings()
+            manager.set_embed(
+                metadata=bool(data.get("embed_metadata", cur["embed_metadata"])),
+                thumbnail=bool(data.get("embed_thumbnail", cur["embed_thumbnail"])),
+                chapters=bool(data.get("embed_chapters", cur["embed_chapters"])),
+            )
+        if "use_archive" in data:
+            manager.set_use_archive(bool(data["use_archive"]))
+        if "last_quality" in data or "last_sponsorblock" in data:
+            manager.remember_choices(
+                data.get("last_quality"),
+                data.get("last_sponsorblock") if isinstance(data.get("last_sponsorblock"), list) else None,
+            )
+    settings = manager.settings()
+    settings["categories"] = sorted(SPONSORBLOCK_CATEGORIES)
+    settings["qualities"] = {
+        key: {"label": preset["label"], "audio_only": preset.get("audio_only", False)}
+        for key, preset in QUALITY_PRESETS.items()
+    }
+    return jsonify(settings)
+
+
+@app.route("/api/metadata/scan", methods=["POST"])
+def api_metadata_scan() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    custom_dir = (data.get("dir") or "").strip()
+    root = Path(custom_dir).expanduser().resolve() if custom_dir else manager.download_dir
+    if not root.is_dir():
+        return jsonify({"error": f"not a directory: {root}"}), 400
+    for binary in ("ffmpeg", "ffprobe", "yt-dlp"):
+        if shutil.which(binary) is None:
+            return jsonify({"error": f"{binary} not on PATH"}), 400
+    candidates = metadata_service.scan(root)
     return jsonify({
-        "download_dir": str(manager.download_dir),
-        "categories": sorted(SPONSORBLOCK_CATEGORIES),
-        "qualities": {
-            key: {"label": preset["label"], "audio_only": preset.get("audio_only", False)}
-            for key, preset in QUALITY_PRESETS.items()
-        },
+        "root": str(root),
+        "candidates": candidates,
+        "needs": sum(1 for c in candidates if c["missing"]),
+        "total": len(candidates),
     })
+
+
+@app.route("/api/metadata/fix", methods=["POST"])
+def api_metadata_fix() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    custom_dir = (data.get("dir") or "").strip()
+    dry_run = bool(data.get("dry_run", False))
+    root = Path(custom_dir).expanduser().resolve() if custom_dir else manager.download_dir
+    if not root.is_dir():
+        return jsonify({"error": f"not a directory: {root}"}), 400
+    for binary in ("ffmpeg", "ffprobe", "yt-dlp"):
+        if shutil.which(binary) is None:
+            return jsonify({"error": f"{binary} not on PATH"}), 400
+    started = metadata_service.start_fix(root, dry_run=dry_run)
+    if not started:
+        return jsonify({"error": "metadata fixer is already running"}), 409
+    return jsonify({"ok": True, "root": str(root), "dry_run": dry_run})
+
+
+@app.route("/api/metadata/cancel", methods=["POST"])
+def api_metadata_cancel() -> Response:
+    return jsonify({"cancelled": metadata_service.cancel()})
 
 
 @app.route("/api/events")
@@ -666,7 +1200,8 @@ def api_events() -> Response:
 def main() -> None:
     host = os.environ.get("YTARCHIVE_HOST", "127.0.0.1")
     port = int(os.environ.get("YTARCHIVE_PORT", "8765"))
-    print(f"\nYTArchive bridge → http://{host}:{port}\n")
+    print(f"\nYTArchive bridge → http://{host}:{port}")
+    print(f"State file:       {STATE_FILE}\n")
     app.run(host=host, port=port, threaded=True, debug=False)
 
 

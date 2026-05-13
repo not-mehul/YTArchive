@@ -40,8 +40,10 @@
           name="channel-url"
           type="text"
           spellcheck="false"
+          list="channel-history"
           placeholder="https://www.youtube.com/@channel  ·  or any playlist URL"
         />
+        <datalist id="channel-history"></datalist>
         <button type="submit" class="btn btn-primary" id="scrape-btn">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3-3"></path></svg>
           Fetch
@@ -102,6 +104,15 @@
     </section>
 
     <section class="section grid-section" id="grid-section" hidden>
+      <div class="grid-filter-row">
+        <input
+          id="grid-filter"
+          type="text"
+          spellcheck="false"
+          placeholder="Filter this page · title contains…"
+        />
+        <span class="filter-count mono" id="filter-count"></span>
+      </div>
       <div class="video-grid" id="video-grid"></div>
       <div class="grid-empty" id="grid-empty" hidden>
         <p class="muted">No videos on this page.</p>
@@ -139,6 +150,52 @@
           </p>
         </div>
       </div>
+
+      <div class="advanced-grid">
+        <div class="panel">
+          <p class="label">Library · embed into file</p>
+          <div class="check-grid" id="embed-grid">
+            <label class="check" for="embed-metadata">
+              <input type="checkbox" id="embed-metadata" />
+              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+              Metadata
+            </label>
+            <label class="check" for="embed-thumbnail">
+              <input type="checkbox" id="embed-thumbnail" />
+              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+              Thumbnail
+            </label>
+            <label class="check" for="embed-chapters">
+              <input type="checkbox" id="embed-chapters" />
+              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+              Chapters
+            </label>
+          </div>
+          <p class="hint">
+            <em>Plex &amp; Jellyfin.</em> Embeds title, uploader, thumbnail,
+            and chapter markers into the file so libraries pick them up
+            without sidecar files.
+          </p>
+        </div>
+
+        <div class="panel">
+          <p class="label">Concurrency &amp; archive</p>
+          <div class="concurrency-row">
+            <label for="concurrency-input" class="concurrency-label">Parallel downloads</label>
+            <input id="concurrency-input" type="number" min="1" max="4" step="1" value="1" />
+          </div>
+          <label class="check archive-check" for="use-archive">
+            <input type="checkbox" id="use-archive" />
+            <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+            Use download archive
+          </label>
+          <p class="hint">
+            <em>Archive.</em> Skips IDs already recorded in
+            <span class="mono">archive.txt</span> at the destination
+            root — safe to re-run against the same channel.
+          </p>
+        </div>
+      </div>
     </section>
 
     <section class="section dest-section">
@@ -153,6 +210,27 @@
         </form>
       </div>
       <p class="hint" id="env-hint"></p>
+    </section>
+
+    <section class="section meta-fix-section" aria-labelledby="mf-title">
+      <div class="section-head">
+        <span class="marker">Housekeeping.</span>
+        <h2 id="mf-title" class="section-title">
+          Repair <em>metadata</em>, thumbnails &amp; chapters.
+        </h2>
+        <div class="queue-controls">
+          <button class="btn btn-ghost" id="mf-scan" type="button">Scan</button>
+          <button class="btn btn-secondary" id="mf-fix" type="button">Fix all</button>
+          <button class="btn btn-ghost" id="mf-cancel" type="button" hidden>Cancel</button>
+        </div>
+      </div>
+      <p class="hint">
+        Walks the destination folder, probes each file with
+        <span class="mono">ffprobe</span>, and re-embeds anything missing.
+        Originals are replaced in-place once the new file is written.
+      </p>
+      <div class="mf-status" id="mf-status" hidden></div>
+      <div class="mf-list" id="mf-list"></div>
     </section>
 
     <section class="section queue-section" aria-labelledby="q-title">
