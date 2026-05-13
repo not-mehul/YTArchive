@@ -22,6 +22,7 @@ const QUALITIES = [
 const state = {
   channelUrl: "",
   page: 1,
+  ignoreShorts: true,
   videos: [],
   selected: new Set(),  // video_ids currently checked in the grid
   queuedIds: new Set(), // video_ids already on the queue
@@ -171,12 +172,17 @@ async function loadPage() {
   try {
     const data = await api("/api/scrape", {
       method: "POST",
-      body: JSON.stringify({ url: state.channelUrl, page: state.page }),
+      body: JSON.stringify({
+        url: state.channelUrl,
+        page: state.page,
+        ignore_shorts: state.ignoreShorts,
+      }),
     });
     state.videos = data.videos || [];
     state.selected.clear();
     renderMeta(data);
     renderGrid();
+    renderShortsNote(data);
     $("#channel-meta").hidden = false;
     $("#grid-section").hidden = false;
   } catch (err) {
@@ -236,6 +242,16 @@ function renderGrid() {
     grid.appendChild(card);
   }
   updateSelectedCount();
+}
+
+function renderShortsNote(data) {
+  const note = $("#shorts-skip-note");
+  if (!note) return;
+  if (state.ignoreShorts && data.skipped_shorts > 0) {
+    note.textContent = `· ${data.skipped_shorts} short${data.skipped_shorts === 1 ? "" : "s"} hidden on this page`;
+  } else {
+    note.textContent = "";
+  }
 }
 
 function fmtViews(n) {
@@ -503,6 +519,10 @@ function patchQItem(it) {
 
 function bind() {
   $("#scrape-form").addEventListener("submit", (e) => { e.preventDefault(); scrape(); });
+  $("#ignore-shorts").addEventListener("change", (e) => {
+    state.ignoreShorts = e.target.checked;
+    if (state.channelUrl) loadPage();
+  });
   $("#prev-page").addEventListener("click", () => { if (state.page > 1) { state.page--; loadPage(); } });
   $("#next-page").addEventListener("click", () => { state.page++; loadPage(); });
   $("#select-page").addEventListener("click", () => {

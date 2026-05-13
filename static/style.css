@@ -224,6 +224,19 @@ input[type="text"] {
 input[type="text"]::placeholder { color: var(--text-decor); }
 input[type="text"]:focus { border-color: var(--text-mute); }
 
+.source-options {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+}
+.source-options-hint {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--text-mute);
+}
+
 /* --- buttons -------------------------------------------------------------- */
 
 .btn {

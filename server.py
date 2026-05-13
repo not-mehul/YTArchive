@@ -425,7 +425,21 @@ def _thumbnail_for(video_id: str, hinted: str | None) -> str | None:
     return None
 
 
-def scrape_channel(url: str, start: int, end: int) -> dict[str, Any]:
+SHORTS_DURATION_CUTOFF = 60  # seconds; canonical YouTube Shorts limit
+
+
+def _is_short(entry_url: str | None, duration: Any) -> bool:
+    if entry_url and "/shorts/" in entry_url:
+        return True
+    try:
+        if duration is not None and float(duration) > 0 and float(duration) <= SHORTS_DURATION_CUTOFF:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def scrape_channel(url: str, start: int, end: int, ignore_shorts: bool = True) -> dict[str, Any]:
     """Return a page of videos from a channel/playlist URL.
 
     yt-dlp's --flat-playlist + --dump-json gives one JSON object per entry on
@@ -455,6 +469,7 @@ def scrape_channel(url: str, start: int, end: int) -> dict[str, Any]:
         raise RuntimeError(msg)
     videos: list[dict[str, Any]] = []
     channel: str | None = None
+    skipped_shorts = 0
     for line in proc.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -466,6 +481,13 @@ def scrape_channel(url: str, start: int, end: int) -> dict[str, Any]:
         vid = entry.get("id")
         if not vid:
             continue
+        entry_url = entry.get("url") or f"https://www.youtube.com/watch?v={vid}"
+        duration = entry.get("duration")
+        if ignore_shorts and _is_short(entry_url, duration):
+            skipped_shorts += 1
+            if not channel:
+                channel = entry.get("channel") or entry.get("uploader")
+            continue
         thumb = None
         thumbs = entry.get("thumbnails") or []
         if isinstance(thumbs, list) and thumbs:
@@ -474,10 +496,10 @@ def scrape_channel(url: str, start: int, end: int) -> dict[str, Any]:
             thumb = entry["thumbnail"]
         videos.append({
             "video_id": vid,
-            "url": entry.get("url") or f"https://www.youtube.com/watch?v={vid}",
+            "url": entry_url,
             "title": entry.get("title") or vid,
             "thumbnail": _thumbnail_for(vid, thumb),
-            "duration": entry.get("duration"),
+            "duration": duration,
             "upload_date": entry.get("upload_date"),
             "view_count": entry.get("view_count"),
             "channel": entry.get("channel") or entry.get("uploader"),
@@ -490,6 +512,8 @@ def scrape_channel(url: str, start: int, end: int) -> dict[str, Any]:
         "start": start,
         "end": end,
         "count": len(videos),
+        "skipped_shorts": skipped_shorts,
+        "ignore_shorts": ignore_shorts,
     }
 
 
@@ -520,6 +544,7 @@ def api_scrape() -> Response:
     data = request.get_json(force=True, silent=True) or {}
     url = (data.get("url") or "").strip()
     page = int(data.get("page", 1))
+    ignore_shorts = bool(data.get("ignore_shorts", True))
     if not url:
         return jsonify({"error": "url is required"}), 400
     if page < 1:
@@ -527,7 +552,7 @@ def api_scrape() -> Response:
     start = (page - 1) * SCRAPE_PAGE_SIZE + 1
     end = page * SCRAPE_PAGE_SIZE
     try:
-        result = scrape_channel(url, start, end)
+        result = scrape_channel(url, start, end, ignore_shorts=ignore_shorts)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     result["page"] = page
