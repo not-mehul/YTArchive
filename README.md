@@ -117,25 +117,6 @@ broadcast to the UI over Server-Sent Events at `/api/events`.
 └── downloads/            # default output (created on first run)
 ```
 
-## Metadata fixer
-
-`metadata_fixer.py` walks a folder of already-downloaded files and
-re-embeds any missing title / uploader / thumbnail / chapter data by
-fetching the YouTube info JSON via `yt-dlp` and muxing it in with
-`ffmpeg`. Files are identified by the `[VIDEOID]` suffix in their name.
-
-```sh
-# dry-run against the default ./downloads folder
-python3 metadata_fixer.py --dry-run --verbose
-
-# actually fix
-python3 metadata_fixer.py --dir ~/Videos/YT
-```
-
-The same routine is reachable from the web UI under
-**Housekeeping → Scan / Fix all**, with per-file progress streamed over
-SSE.
-
 ## Notes
 
 - The bridge binds to `127.0.0.1` by default. Don't expose it on a

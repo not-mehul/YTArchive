@@ -23,9 +23,8 @@
         A reading-room for <em>channel archival</em>.
       </h1>
       <p class="lede">
-        Scrape a YouTube channel, prune the fluff with SponsorBlock,
-        and save the rest. Everything runs locally — your downloads
-        never leave the machine.
+        Scrape a YouTube channel, trim the fluff with SponsorBlock,
+        and save the rest. Everything runs locally.
       </p>
     </header>
 
@@ -60,8 +59,8 @@
         <span class="source-options-hint" id="shorts-skip-note"></span>
       </div>
       <p class="hint" id="scrape-hint">
-        Videos are pulled in batches of 50. Use the page arrows to walk
-        a large channel without loading thousands of thumbnails at once.
+        Videos load in pages of 50. Walk a long channel with the arrows
+        instead of pulling thousands of thumbnails at once.
       </p>
     </section>
 
@@ -94,8 +93,8 @@
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg>
         </button>
         <span class="spacer"></span>
-        <button class="btn btn-secondary" id="select-page" type="button">Select page</button>
-        <button class="btn btn-secondary" id="clear-selection" type="button">Clear</button>
+        <button class="btn btn-ghost" id="select-page" type="button">Select page</button>
+        <button class="btn btn-ghost" id="clear-selection" type="button">Clear</button>
         <button class="btn btn-primary" id="queue-selected" type="button" disabled>
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
           Queue selected
@@ -122,7 +121,7 @@
     <section class="section config-section" aria-labelledby="cfg-title">
       <div class="section-head">
         <span class="marker">Configuration.</span>
-        <h2 id="cfg-title" class="section-title">What to <em>cut</em>, and at what fidelity.</h2>
+        <h2 id="cfg-title" class="section-title">What to <em>trim</em>, and at what fidelity.</h2>
       </div>
 
       <div class="config-grid">
@@ -132,10 +131,9 @@
             <!-- populated by JS -->
           </div>
           <p class="hint">
-            <em>Algorithm.</em> Segments are looked up against the public
-            SponsorBlock database, then cut from the muxed file by
-            ffmpeg's chapter editor. Original timestamps are preserved
-            in metadata.
+            <em>Algorithm.</em> Segments are looked up in the public
+            SponsorBlock database, then trimmed from the muxed file by
+            ffmpeg's chapter editor. Chapter timestamps shift to match.
           </p>
         </div>
 
@@ -172,9 +170,9 @@
             </label>
           </div>
           <p class="hint">
-            <em>Plex &amp; Jellyfin.</em> Embeds title, uploader, thumbnail,
+            <em>Plex &amp; Jellyfin.</em> Writes title, uploader, thumbnail,
             and chapter markers into the file so libraries pick them up
-            without sidecar files.
+            without sidecars.
           </p>
         </div>
 
@@ -199,38 +197,21 @@
     </section>
 
     <section class="section dest-section">
+      <div class="section-head">
+        <span class="marker">Destination.</span>
+        <h2 class="section-title">Where downloads <em>land</em>.</h2>
+      </div>
       <div class="dest-row">
-        <div>
-          <p class="label">Destination</p>
+        <div class="dest-current">
+          <span class="label">Current path</span>
           <p class="mono dest-path" id="dest-path">./downloads</p>
         </div>
         <form id="dest-form" class="dest-edit">
           <input id="dest-input" type="text" placeholder="absolute path · ~/Videos/YT" spellcheck="false" />
-          <button type="submit" class="btn btn-secondary">Save</button>
+          <button type="submit" class="btn btn-ghost">Save</button>
         </form>
       </div>
       <p class="hint" id="env-hint"></p>
-    </section>
-
-    <section class="section meta-fix-section" aria-labelledby="mf-title">
-      <div class="section-head">
-        <span class="marker">Housekeeping.</span>
-        <h2 id="mf-title" class="section-title">
-          Repair <em>metadata</em>, thumbnails &amp; chapters.
-        </h2>
-        <div class="queue-controls">
-          <button class="btn btn-ghost" id="mf-scan" type="button">Scan</button>
-          <button class="btn btn-secondary" id="mf-fix" type="button">Fix all</button>
-          <button class="btn btn-ghost" id="mf-cancel" type="button" hidden>Cancel</button>
-        </div>
-      </div>
-      <p class="hint">
-        Walks the destination folder, probes each file with
-        <span class="mono">ffprobe</span>, and re-embeds anything missing.
-        Originals are replaced in-place once the new file is written.
-      </p>
-      <div class="mf-status" id="mf-status" hidden></div>
-      <div class="mf-list" id="mf-list"></div>
     </section>
 
     <section class="section queue-section" aria-labelledby="q-title">
@@ -241,7 +222,7 @@
           <span class="muted-inline" id="q-meta">items</span>
         </h2>
         <div class="queue-controls">
-          <button class="btn btn-secondary" id="q-start" type="button">
+          <button class="btn btn-primary" id="q-start" type="button">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>
             Start
           </button>
@@ -261,10 +242,10 @@
 
     <footer class="footer">
       <p>
-        <em>Privacy.</em> No telemetry, no remote API beyond YouTube
-        and SponsorBlock. <em>Engine.</em> yt-dlp handles fetching;
-        ffmpeg handles muxing and chapter edits. <em>Reach.</em> The
-        bridge server only binds to <span class="mono">127.0.0.1</span>.
+        <em>Privacy.</em> No telemetry. The only remote calls are to
+        YouTube and SponsorBlock. <em>Engine.</em> yt-dlp fetches;
+        ffmpeg muxes and trims. <em>Reach.</em> The bridge binds to
+        <span class="mono">127.0.0.1</span>.
       </p>
     </footer>
   </main>

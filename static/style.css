@@ -511,7 +511,8 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   align-items: flex-end;
   flex-wrap: wrap;
 }
-.dest-row > div:first-child { flex: 1; min-width: 240px; }
+.dest-current { flex: 1; min-width: 240px; }
+.dest-current .label { margin-bottom: 0.5rem; }
 .dest-path {
   font-size: 0.9375rem;
   color: var(--text-strong);
@@ -575,10 +576,10 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .qmeta {
   display: flex;
-  gap: 0.75rem;
+  gap: 0.5rem 0.75rem;
   align-items: center;
-  font-family: var(--mono);
-  font-size: 0.6875rem;
+  font-family: var(--sans);
+  font-size: 0.75rem;
   color: var(--text-mute);
   flex-wrap: wrap;
 }
@@ -588,6 +589,18 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 .qmeta .qstatus.completed { color: var(--sage); }
 .qmeta .qstatus.failed { color: var(--err-fg); }
 .qmeta .qstatus.cancelled { color: var(--text-decor); }
+.qmeta .qchip {
+  font-family: var(--sans);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--text-mute);
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.qmeta .qchip.mono { font-family: var(--mono); letter-spacing: 0; text-transform: none; }
 
 .qprogress {
   margin-top: 0.45rem;
@@ -735,68 +748,6 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 #concurrency-input:focus { border-color: var(--text-mute); }
 
 .archive-check { margin-top: 0.25rem; }
-
-/* --- metadata fixer ------------------------------------------------------ */
-
-.mf-status {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--text-mute);
-  padding: 0.6rem 0.9rem;
-  border: 1px solid var(--border-soft);
-  border-radius: 2px;
-  background: rgba(20, 17, 14, 0.6);
-  margin-bottom: 0.75rem;
-}
-
-.mf-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  max-height: 320px;
-  overflow-y: auto;
-}
-.mf-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 0.75rem;
-  align-items: center;
-  padding: 0.5rem 0.75rem;
-  background: rgba(20, 17, 14, 0.5);
-  border: 1px solid var(--border-soft);
-  border-radius: 2px;
-}
-.mf-row.ok     { border-color: var(--border-soft); opacity: 0.65; }
-.mf-row.needs  { border-color: var(--amber); }
-.mf-row.fixed  { border-color: var(--sage); }
-.mf-row.failed { border-color: var(--err-fg); }
-.mf-row.no-id  { opacity: 0.5; }
-
-.mf-name {
-  font-size: 0.75rem;
-  color: var(--text-strong);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.mf-tags { display: inline-flex; gap: 0.35rem; flex-wrap: wrap; }
-.mf-chip {
-  font-family: var(--mono);
-  font-size: 0.625rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--amber);
-  border: 1px solid var(--amber);
-  border-radius: 2px;
-  padding: 0.1rem 0.4rem;
-}
-.mf-row.fixed .mf-chip { color: var(--sage); border-color: var(--sage); opacity: 0.7; }
-.mf-row.failed .mf-chip { color: var(--err-fg); border-color: var(--err-fg); }
-
-.mf-verb { color: var(--text-body); white-space: nowrap; }
-.mf-row.ok .mf-verb     { color: var(--text-mute); }
-.mf-row.fixed .mf-verb  { color: var(--sage); }
-.mf-row.failed .mf-verb { color: var(--err-fg); }
 
 /* --- datalist (visual cue only, browser styles the dropdown) ------------- */
 input[list]::-webkit-calendar-picker-indicator {

@@ -498,16 +498,16 @@ function renderQItem(it) {
 
   const meta = el("div", { class: "qmeta" });
   meta.appendChild(el("span", { class: `qstatus ${it.status}` }, [statusIcon(it.status), statusLabel(it)]));
-  meta.appendChild(el("span", {}, qualityLabel(it.quality)));
-  if (it.sponsorblock && it.sponsorblock.length) {
-    meta.appendChild(el("span", {}, `cut ${it.sponsorblock.length}`));
+  meta.appendChild(el("span", { class: "qchip" }, qualityLabel(it.quality)));
+  if (it.status === "pending" && it.sponsorblock && it.sponsorblock.length) {
+    const n = it.sponsorblock.length;
+    meta.appendChild(el("span", { class: "qchip", title: it.sponsorblock.join(", ") },
+      `SponsorBlock · ${n} categor${n === 1 ? "y" : "ies"}`));
   }
   if (it.status === "downloading") {
-    if (it.speed) meta.appendChild(el("span", {}, it.speed));
-    if (it.eta) meta.appendChild(el("span", {}, `eta ${it.eta}`));
-  }
-  if (it.status === "downloading" || it.status === "completed") {
-    meta.appendChild(el("span", {}, `${(it.progress || 0).toFixed(1)}%`));
+    if (it.speed) meta.appendChild(el("span", { class: "qchip mono" }, it.speed));
+    if (it.eta) meta.appendChild(el("span", { class: "qchip mono" }, `eta ${it.eta}`));
+    meta.appendChild(el("span", { class: "qchip mono" }, `${(it.progress || 0).toFixed(1)}%`));
   }
   body.appendChild(meta);
 
@@ -671,10 +671,6 @@ function handleEvent(payload) {
       setRunning(!!payload.running);
       break;
     }
-    case "metadata": {
-      handleMetadataEvent(payload);
-      break;
-    }
     case "settings": {
       let advancedDirty = false;
       if (payload.download_dir) {
@@ -704,136 +700,6 @@ function patchQItem(it) {
   if (!node) { renderQueue(); return; }
   const fresh = renderQItem(it);
   node.replaceWith(fresh);
-}
-
-// ---------- metadata fixer ----------
-
-const metaState = {
-  running: false,
-  total: 0,
-  results: new Map(), // name -> { status, missing, detail }
-};
-
-function mfSetRunning(running) {
-  metaState.running = running;
-  $("#mf-scan").disabled = running;
-  $("#mf-fix").disabled = running;
-  $("#mf-cancel").hidden = !running;
-}
-
-function mfStatus(text) {
-  const node = $("#mf-status");
-  if (!node) return;
-  if (!text) { node.hidden = true; node.textContent = ""; return; }
-  node.hidden = false;
-  node.textContent = text;
-}
-
-function mfRenderResults() {
-  const list = $("#mf-list");
-  if (!list) return;
-  list.innerHTML = "";
-  for (const [name, r] of metaState.results) {
-    const row = el("div", { class: `mf-row ${r.status}` });
-    row.appendChild(el("span", { class: "mf-name mono" }, name));
-    const tags = el("span", { class: "mf-tags" });
-    if (r.missing && r.missing.length) {
-      for (const m of r.missing) tags.appendChild(el("span", { class: "mf-chip" }, m));
-    }
-    row.appendChild(tags);
-    const statusVerb = el("em", { class: "status-verb mf-verb" }, mfStatusLabel(r));
-    row.appendChild(statusVerb);
-    list.appendChild(row);
-  }
-}
-
-function mfStatusLabel(r) {
-  if (r.status === "ok") return "Already complete";
-  if (r.status === "fixed") return "Fixed";
-  if (r.status === "needs") return "Needs fix";
-  if (r.status === "no-id") return "Skipped — no ID";
-  if (r.status === "failed") return `Failed · ${r.detail || ""}`.trim();
-  return r.status;
-}
-
-async function mfScan() {
-  metaState.results.clear();
-  mfRenderResults();
-  mfStatus("Scanning…");
-  try {
-    const r = await api("/api/metadata/scan", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-    for (const c of r.candidates) {
-      metaState.results.set(c.name, {
-        status: c.ok ? "ok" : "needs",
-        missing: c.missing || [],
-        detail: "",
-      });
-    }
-    mfRenderResults();
-    mfStatus(`${r.needs} of ${r.total} file${r.total === 1 ? "" : "s"} need attention · ${r.root}`);
-  } catch (err) {
-    mfStatus("");
-    toast(err.message || String(err), "error");
-  }
-}
-
-async function mfFix() {
-  metaState.results.clear();
-  mfRenderResults();
-  mfStatus("Starting…");
-  try {
-    await api("/api/metadata/fix", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-  } catch (err) {
-    mfStatus("");
-    toast(err.message || String(err), "error");
-  }
-}
-
-async function mfCancel() {
-  try { await api("/api/metadata/cancel", { method: "POST" }); }
-  catch (err) { toast(err.message, "error"); }
-}
-
-function handleMetadataEvent(payload) {
-  switch (payload.phase) {
-    case "started":
-      metaState.total = payload.total || 0;
-      metaState.results.clear();
-      mfRenderResults();
-      mfSetRunning(true);
-      mfStatus(`Processing 0 / ${metaState.total}${payload.dry_run ? " (dry run)" : ""}`);
-      break;
-    case "progress":
-      mfStatus(`Processing ${payload.index} / ${payload.total} · ${payload.name}`);
-      break;
-    case "result":
-      metaState.results.set(payload.name, {
-        status: payload.status,
-        missing: payload.missing || [],
-        detail: payload.detail || "",
-      });
-      mfRenderResults();
-      break;
-    case "done": {
-      const c = payload.counts || {};
-      mfSetRunning(false);
-      mfStatus(
-        `Done · ok=${c.ok || 0} · fixed=${c.fixed || 0} · ` +
-        `failed=${c.failed || 0} · skipped=${(c["no-id"] || 0)}`
-      );
-      break;
-    }
-    case "cancelled":
-      mfSetRunning(false);
-      mfStatus("Cancelled.");
-      break;
-  }
 }
 
 // ---------- bindings ----------
@@ -901,13 +767,6 @@ function bind() {
       saveConcurrency();
     }
   });
-
-  const mfScanBtn = $("#mf-scan");
-  if (mfScanBtn) mfScanBtn.addEventListener("click", mfScan);
-  const mfFixBtn = $("#mf-fix");
-  if (mfFixBtn) mfFixBtn.addEventListener("click", mfFix);
-  const mfCancelBtn = $("#mf-cancel");
-  if (mfCancelBtn) mfCancelBtn.addEventListener("click", mfCancel);
 
   $("#q-start").addEventListener("click", startQueue);
   $("#q-pause").addEventListener("click", pauseQueue);

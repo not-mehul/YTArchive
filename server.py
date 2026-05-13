@@ -25,8 +25,6 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-import metadata_fixer
-
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -725,104 +723,6 @@ manager = QueueManager()
 
 
 # ---------------------------------------------------------------------------
-# Metadata fixer service
-# ---------------------------------------------------------------------------
-
-
-class MetadataFixerService:
-    """Runs metadata_fixer in a background thread, broadcasting per-file
-    progress over the QueueManager's SSE channel so the UI can subscribe.
-    """
-
-    def __init__(self, mgr: QueueManager) -> None:
-        self._mgr = mgr
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._cancel = threading.Event()
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return self._thread is not None and self._thread.is_alive()
-
-    def scan(self, root: Path) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        for path in metadata_fixer.walk_candidates(root):
-            missing = metadata_fixer.diagnose_file(path)
-            vid = metadata_fixer.extract_video_id(path)
-            out.append({
-                "path": str(path),
-                "name": path.name,
-                "rel": str(path.relative_to(root)) if path.is_relative_to(root) else path.name,
-                "video_id": vid,
-                "missing": missing,
-                "ok": not missing,
-            })
-        return out
-
-    def start_fix(self, root: Path, dry_run: bool = False) -> bool:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return False
-            self._cancel.clear()
-            self._thread = threading.Thread(
-                target=self._run, args=(root, dry_run), daemon=True
-            )
-            self._thread.start()
-        return True
-
-    def cancel(self) -> bool:
-        if self.is_running():
-            self._cancel.set()
-            return True
-        return False
-
-    def _broadcast(self, payload: dict[str, Any]) -> None:
-        self._mgr._broadcast({"type": "metadata", **payload})
-
-    def _run(self, root: Path, dry_run: bool) -> None:
-        candidates = list(metadata_fixer.walk_candidates(root))
-        total = len(candidates)
-        self._broadcast({"phase": "started", "total": total, "dry_run": dry_run})
-        counts: dict[str, int] = {"ok": 0, "fixed": 0, "needs": 0, "no-id": 0, "failed": 0}
-        for index, path in enumerate(candidates, start=1):
-            if self._cancel.is_set():
-                self._broadcast({"phase": "cancelled", "counts": counts})
-                return
-            self._broadcast({
-                "phase": "progress",
-                "index": index,
-                "total": total,
-                "name": path.name,
-            })
-            try:
-                res = metadata_fixer.fix_file(path, dry_run=dry_run)
-            except Exception as exc:  # defensive
-                counts["failed"] += 1
-                self._broadcast({
-                    "phase": "result",
-                    "index": index,
-                    "name": path.name,
-                    "status": "failed",
-                    "missing": [],
-                    "detail": str(exc),
-                })
-                continue
-            counts[res.status] = counts.get(res.status, 0) + 1
-            self._broadcast({
-                "phase": "result",
-                "index": index,
-                "name": path.name,
-                "status": res.status,
-                "missing": res.missing,
-                "detail": res.detail,
-            })
-        self._broadcast({"phase": "done", "counts": counts})
-
-
-metadata_service = MetadataFixerService(manager)
-
-
-# ---------------------------------------------------------------------------
 # Reveal helper
 # ---------------------------------------------------------------------------
 
@@ -1129,47 +1029,6 @@ def api_settings() -> Response:
         for key, preset in QUALITY_PRESETS.items()
     }
     return jsonify(settings)
-
-
-@app.route("/api/metadata/scan", methods=["POST"])
-def api_metadata_scan() -> Response:
-    data = request.get_json(force=True, silent=True) or {}
-    custom_dir = (data.get("dir") or "").strip()
-    root = Path(custom_dir).expanduser().resolve() if custom_dir else manager.download_dir
-    if not root.is_dir():
-        return jsonify({"error": f"not a directory: {root}"}), 400
-    for binary in ("ffmpeg", "ffprobe", "yt-dlp"):
-        if shutil.which(binary) is None:
-            return jsonify({"error": f"{binary} not on PATH"}), 400
-    candidates = metadata_service.scan(root)
-    return jsonify({
-        "root": str(root),
-        "candidates": candidates,
-        "needs": sum(1 for c in candidates if c["missing"]),
-        "total": len(candidates),
-    })
-
-
-@app.route("/api/metadata/fix", methods=["POST"])
-def api_metadata_fix() -> Response:
-    data = request.get_json(force=True, silent=True) or {}
-    custom_dir = (data.get("dir") or "").strip()
-    dry_run = bool(data.get("dry_run", False))
-    root = Path(custom_dir).expanduser().resolve() if custom_dir else manager.download_dir
-    if not root.is_dir():
-        return jsonify({"error": f"not a directory: {root}"}), 400
-    for binary in ("ffmpeg", "ffprobe", "yt-dlp"):
-        if shutil.which(binary) is None:
-            return jsonify({"error": f"{binary} not on PATH"}), 400
-    started = metadata_service.start_fix(root, dry_run=dry_run)
-    if not started:
-        return jsonify({"error": "metadata fixer is already running"}), 409
-    return jsonify({"ok": True, "root": str(root), "dry_run": dry_run})
-
-
-@app.route("/api/metadata/cancel", methods=["POST"])
-def api_metadata_cancel() -> Response:
-    return jsonify({"cancelled": metadata_service.cancel()})
 
 
 @app.route("/api/events")
