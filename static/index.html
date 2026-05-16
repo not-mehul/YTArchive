@@ -177,6 +177,27 @@
         </div>
 
         <div class="panel">
+          <p class="label">Cookies · for age-restricted videos</p>
+          <div class="concurrency-row">
+            <label for="cookies-browser" class="concurrency-label">Read from browser</label>
+            <select id="cookies-browser">
+              <option value="">None</option>
+            </select>
+          </div>
+          <div class="concurrency-row">
+            <label for="cookies-file" class="concurrency-label">Cookies file</label>
+            <input id="cookies-file" type="text" spellcheck="false" placeholder="path to cookies.txt (fallback)" />
+          </div>
+          <p class="hint">
+            <em>Why.</em> YouTube blocks age-restricted videos for
+            signed-out clients. Pointing yt-dlp at a logged-in browser
+            (<span class="mono">--cookies-from-browser</span>) is the
+            simplest fix. The file path is used only when no browser is
+            selected.
+          </p>
+        </div>
+
+        <div class="panel">
           <p class="label">Concurrency &amp; archive</p>
           <div class="concurrency-row">
             <label for="concurrency-input" class="concurrency-label">Parallel downloads</label>

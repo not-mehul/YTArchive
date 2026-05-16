@@ -91,6 +91,13 @@ QUALITY_PRESETS: dict[str, dict[str, Any]] = {
 
 MAX_CONCURRENCY = 4
 
+# yt-dlp supports cookies via --cookies-from-browser. Whitelist the values it
+# accepts so the UI can offer a closed dropdown rather than free text.
+COOKIE_BROWSERS = (
+    "brave", "chrome", "chromium", "edge", "firefox",
+    "opera", "safari", "vivaldi", "whale",
+)
+
 
 # ---------------------------------------------------------------------------
 # Queue data model
@@ -107,7 +114,7 @@ class QueueItem:
     duration: int | None
     quality: str
     sponsorblock: list[str]
-    status: str = "pending"  # pending | downloading | completed | failed | cancelled
+    status: str = "pending"  # pending | downloading | paused | completed | failed | cancelled
     progress: float = 0.0
     speed: str | None = None
     eta: str | None = None
@@ -167,12 +174,15 @@ class QueueManager:
         self._running = False
         self._active_procs: dict[str, subprocess.Popen] = {}
         self._dispatched: set[str] = set()
+        self._pausing: set[str] = set()
         self._download_dir: Path = DEFAULT_DOWNLOAD_DIR
         self._concurrency: int = 1
         self._embed_metadata: bool = True
         self._embed_thumbnail: bool = True
         self._embed_chapters: bool = True
         self._use_archive: bool = False
+        self._cookies_browser: str = ""
+        self._cookies_file: str = ""
         self._history: list[str] = []
         self._last_quality: str = "1080p"
         self._last_sponsorblock: list[str] = ["sponsor", "selfpromo"]
@@ -203,6 +213,12 @@ class QueueManager:
         self._embed_thumbnail = bool(data.get("embed_thumbnail", True))
         self._embed_chapters = bool(data.get("embed_chapters", True))
         self._use_archive = bool(data.get("use_archive", False))
+        cb = data.get("cookies_browser")
+        if isinstance(cb, str) and cb in COOKIE_BROWSERS:
+            self._cookies_browser = cb
+        cf = data.get("cookies_file")
+        if isinstance(cf, str):
+            self._cookies_file = cf
         hist = data.get("history") or []
         if isinstance(hist, list):
             self._history = [h for h in hist if isinstance(h, str)][:HISTORY_MAX]
@@ -259,6 +275,8 @@ class QueueManager:
                 "embed_thumbnail": self._embed_thumbnail,
                 "embed_chapters": self._embed_chapters,
                 "use_archive": self._use_archive,
+                "cookies_browser": self._cookies_browser,
+                "cookies_file": self._cookies_file,
                 "history": list(self._history),
                 "last_quality": self._last_quality,
                 "last_sponsorblock": list(self._last_sponsorblock),
@@ -301,6 +319,20 @@ class QueueManager:
             "embed_metadata": metadata,
             "embed_thumbnail": thumbnail,
             "embed_chapters": chapters,
+        })
+        self._persist()
+
+    def set_cookies(self, browser: str | None, file: str | None) -> None:
+        with self._lock:
+            if browser is not None:
+                b = (browser or "").strip().lower()
+                self._cookies_browser = b if b in COOKIE_BROWSERS else ""
+            if file is not None:
+                self._cookies_file = (file or "").strip()
+        self._broadcast({
+            "type": "settings",
+            "cookies_browser": self._cookies_browser,
+            "cookies_file": self._cookies_file,
         })
         self._persist()
 
@@ -349,6 +381,9 @@ class QueueManager:
                 "embed_thumbnail": self._embed_thumbnail,
                 "embed_chapters": self._embed_chapters,
                 "use_archive": self._use_archive,
+                "cookies_browser": self._cookies_browser,
+                "cookies_file": self._cookies_file,
+                "cookie_browsers": list(COOKIE_BROWSERS),
                 "history": list(self._history),
                 "last_quality": self._last_quality,
                 "last_sponsorblock": list(self._last_sponsorblock),
@@ -370,7 +405,7 @@ class QueueManager:
             existing_video_ids = {
                 self._items[i].video_id
                 for i in self._order
-                if self._items[i].status in {"pending", "downloading"}
+                if self._items[i].status in {"pending", "downloading", "paused"}
             }
             for v in videos:
                 vid = v.get("video_id") or v.get("id")
@@ -464,6 +499,45 @@ class QueueManager:
         if proc is None:
             return False
         return _terminate_proc(proc)
+
+    def pause_item(self, item_id: str) -> bool:
+        with self._lock:
+            item = self._items.get(item_id)
+            if not item:
+                return False
+            proc = self._active_procs.get(item_id)
+            if proc is None:
+                # Not currently downloading — pause it in place if pending.
+                if item.status == "pending":
+                    item.status = "paused"
+                    item.message = "Paused"
+                    snap = asdict(item)
+                else:
+                    return False
+            else:
+                self._pausing.add(item_id)
+                snap = None
+        if snap is not None:
+            self._broadcast({"type": "update", "item": snap})
+            self._persist()
+            return True
+        return _terminate_proc(proc)
+
+    def resume_item(self, item_id: str) -> bool:
+        with self._lock:
+            item = self._items.get(item_id)
+            if not item or item.status != "paused":
+                return False
+            item.status = "pending"
+            item.message = "Resuming"
+            item.progress = 0.0
+            item.speed = None
+            item.eta = None
+            snap = asdict(item)
+        self._broadcast({"type": "update", "item": snap})
+        self._persist()
+        self._wake.set()
+        return True
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -587,7 +661,11 @@ class QueueManager:
         rc = proc.wait()
         with self._lock:
             self._active_procs.pop(item.id, None)
-        if rc == 0:
+            paused = item.id in self._pausing
+            self._pausing.discard(item.id)
+        if paused:
+            self._finish(item, "paused", "Paused — partial file kept for resume")
+        elif rc == 0:
             self._finish(item, "completed", "Saved")
         elif rc < 0 or (IS_WINDOWS and rc in (3221225786, -1073741510)):
             # CTRL_BREAK/CTRL_C terminations on Windows surface as 0xC000013A
@@ -643,6 +721,10 @@ class QueueManager:
             if self._use_archive:
                 archive_path = self._download_dir / "archive.txt"
                 cmd += ["--download-archive", str(archive_path)]
+            if self._cookies_browser:
+                cmd += ["--cookies-from-browser", self._cookies_browser]
+            elif self._cookies_file:
+                cmd += ["--cookies", self._cookies_file]
         cmd.append(item.url)
         return cmd
 
@@ -653,6 +735,30 @@ class QueueManager:
     )
     _FILEPATH_RE = re.compile(r"^filepath:(.+)$")
     _ERROR_RE = re.compile(r"^ERROR:\s*(.+)$", re.IGNORECASE)
+    _DESTINATION_RE = re.compile(r"^\[download\]\s+Destination:\s*(.+)$")
+
+    _AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".aac", ".wav", ".flac", ".ogg"}
+    _VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".m4v", ".mov", ".avi", ".ts"}
+    _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+    def _classify_destination(self, path: str) -> str:
+        ext = Path(path).suffix.lower()
+        if ext in self._AUDIO_EXTS:
+            return "Downloading audio"
+        if ext in self._VIDEO_EXTS:
+            return "Downloading video"
+        if ext in self._IMAGE_EXTS:
+            return "Downloading thumbnail"
+        return "Downloading"
+
+    def _looks_age_restricted(self, text: str) -> bool:
+        t = text.lower()
+        return (
+            "sign in to confirm your age" in t
+            or "age-restricted" in t
+            or "inappropriate for some users" in t
+            or "confirm you're not a bot" in t
+        )
 
     def _parse_progress(self, item: QueueItem, line: str) -> None:
         m = self._PROGRESS_RE.search(line)
@@ -661,7 +767,19 @@ class QueueManager:
                 item.progress = float(m.group("pct"))
                 item.speed = m.group("speed")
                 item.eta = m.group("eta")
-                item.message = "Downloading"
+                # Preserve "Downloading video / audio / thumbnail" phase set
+                # by the most recent Destination line.
+                if not (item.message or "").startswith("Downloading"):
+                    item.message = "Downloading"
+            return
+        dest = self._DESTINATION_RE.match(line)
+        if dest:
+            phase = self._classify_destination(dest.group(1).strip())
+            with self._lock:
+                item.message = phase
+                item.progress = 0.0
+                item.speed = None
+                item.eta = None
             return
         fp = self._FILEPATH_RE.match(line)
         if fp:
@@ -694,8 +812,15 @@ class QueueManager:
             return
         err = self._ERROR_RE.match(line)
         if err:
+            msg = err.group(1)
+            if self._looks_age_restricted(msg):
+                msg = "Age-restricted — add cookies under Configuration → Cookies"
             with self._lock:
-                item.message = err.group(1)[:200]
+                item.message = msg[:200]
+            return
+        if self._looks_age_restricted(line):
+            with self._lock:
+                item.message = "Age-restricted — add cookies under Configuration → Cookies"
 
 
 def _terminate_proc(proc: subprocess.Popen) -> bool:
@@ -973,6 +1098,26 @@ def api_queue_cancel() -> Response:
     return jsonify({"cancelled": cancelled})
 
 
+@app.route("/api/queue/pause-item", methods=["POST"])
+def api_queue_pause_item() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    item_id = data.get("id")
+    if not item_id:
+        return jsonify({"error": "id is required"}), 400
+    ok = manager.pause_item(item_id)
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/queue/resume-item", methods=["POST"])
+def api_queue_resume_item() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    item_id = data.get("id")
+    if not item_id:
+        return jsonify({"error": "id is required"}), 400
+    ok = manager.resume_item(item_id)
+    return jsonify({"ok": ok})
+
+
 @app.route("/api/queue/reveal", methods=["POST"])
 def api_queue_reveal() -> Response:
     data = request.get_json(force=True, silent=True) or {}
@@ -1017,6 +1162,11 @@ def api_settings() -> Response:
             )
         if "use_archive" in data:
             manager.set_use_archive(bool(data["use_archive"]))
+        if "cookies_browser" in data or "cookies_file" in data:
+            manager.set_cookies(
+                browser=data.get("cookies_browser") if "cookies_browser" in data else None,
+                file=data.get("cookies_file") if "cookies_file" in data else None,
+            )
         if "last_quality" in data or "last_sponsorblock" in data:
             manager.remember_choices(
                 data.get("last_quality"),
