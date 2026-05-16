@@ -689,11 +689,21 @@ class QueueManager:
     def _build_command(self, item: QueueItem) -> list[str]:
         preset = QUALITY_PRESETS[item.quality]
         out_template = str(self._download_dir / "%(uploader)s/%(title)s [%(id)s].%(ext)s")
+        # Custom progress template so every line carries codec info — that's
+        # how we tell which pass is video vs audio vs thumbnail. The default
+        # progress format hides this and the "Destination:" sidecar line is
+        # unreliable across yt-dlp versions / platforms.
+        progress_tpl = (
+            "download:[ytap] pct=%(progress._percent_str)s "
+            "speed=%(progress._speed_str)s eta=%(progress._eta_str)s "
+            "vcodec=%(info.vcodec)s acodec=%(info.acodec)s ext=%(info.ext)s"
+        )
         cmd: list[str] = [
             "yt-dlp",
             "--newline",
             "--no-colors",
             "--progress",
+            "--progress-template", progress_tpl,
             "--no-playlist",
             "-o", out_template,
             "--print", "after_move:filepath:%(filepath)s",
@@ -728,6 +738,10 @@ class QueueManager:
         cmd.append(item.url)
         return cmd
 
+    _YTAP_RE = re.compile(
+        r"\[ytap\]\s+pct=(?P<pct>\S+)\s+speed=(?P<speed>\S+)\s+eta=(?P<eta>\S+)"
+        r"\s+vcodec=(?P<vcodec>\S+)\s+acodec=(?P<acodec>\S+)\s+ext=(?P<ext>\S+)"
+    )
     _PROGRESS_RE = re.compile(
         r"\[download\]\s+(?P<pct>[\d.]+)%(?:\s+of\s+~?\s*(?P<size>[\d.]+\w+))?"
         r"(?:\s+at\s+(?P<speed>[^\s]+))?"
@@ -741,6 +755,8 @@ class QueueManager:
     _VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".m4v", ".mov", ".avi", ".ts"}
     _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
+    _IMAGE_EXT_NAMES = {"jpg", "jpeg", "png", "webp", "gif"}
+
     def _classify_destination(self, path: str) -> str:
         ext = Path(path).suffix.lower()
         if ext in self._AUDIO_EXTS:
@@ -749,6 +765,19 @@ class QueueManager:
             return "Downloading video"
         if ext in self._IMAGE_EXTS:
             return "Downloading thumbnail"
+        return "Downloading"
+
+    def _classify_codecs(self, vcodec: str, acodec: str, ext: str) -> str:
+        v_none = vcodec in ("none", "NA", "")
+        a_none = acodec in ("none", "NA", "")
+        if ext.lower() in self._IMAGE_EXT_NAMES:
+            return "Downloading thumbnail"
+        if v_none and not a_none:
+            return "Downloading audio"
+        if a_none and not v_none:
+            return "Downloading video"
+        if not v_none and not a_none:
+            return "Downloading"  # combined / muxed stream
         return "Downloading"
 
     def _looks_age_restricted(self, text: str) -> bool:
@@ -760,7 +789,37 @@ class QueueManager:
             or "confirm you're not a bot" in t
         )
 
+    @staticmethod
+    def _clean_tpl_value(v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v or v in ("NA", "N/A", "Unknown", "--"):
+            return None
+        return v
+
     def _parse_progress(self, item: QueueItem, line: str) -> None:
+        # Strip carriage returns; yt-dlp on Windows emits CRLF.
+        line = line.rstrip("\r")
+        yt = self._YTAP_RE.search(line)
+        if yt:
+            pct_raw = yt.group("pct").rstrip("%").strip()
+            try:
+                pct = float(pct_raw)
+            except ValueError:
+                pct = None
+            speed = self._clean_tpl_value(yt.group("speed"))
+            eta = self._clean_tpl_value(yt.group("eta"))
+            phase = self._classify_codecs(
+                yt.group("vcodec"), yt.group("acodec"), yt.group("ext"),
+            )
+            with self._lock:
+                if pct is not None:
+                    item.progress = pct
+                item.speed = speed
+                item.eta = eta
+                item.message = phase
+            return
         m = self._PROGRESS_RE.search(line)
         if m:
             with self._lock:
@@ -910,7 +969,11 @@ def scrape_channel(url: str, start: int, end: int, ignore_shorts: bool = True) -
     """
     if shutil.which("yt-dlp") is None:
         raise RuntimeError("yt-dlp is not installed or not on PATH")
-    items_arg = f"{start}:{end}"
+    # For channel URLs yt-dlp's --playlist-items "51:100" often returns nothing
+    # because it never walks the continuation tokens past the first batch. Ask
+    # for 1:end and slice client-side — yt-dlp keeps paginating until it hits
+    # the upper bound, which is what we actually want.
+    items_arg = f"1:{end}"
     cmd = [
         "yt-dlp",
         "--flat-playlist",
@@ -924,19 +987,19 @@ def scrape_channel(url: str, start: int, end: int, ignore_shorts: bool = True) -
         cmd,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=180,
         check=False,
     )
     if proc.returncode != 0 and not proc.stdout.strip():
         msg = (proc.stderr or "").strip().splitlines()[-1] if proc.stderr else "scrape failed"
         raise RuntimeError(msg)
+    raw_lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    # Drop everything before this page's window so we don't re-emit page 1.
+    raw_lines = raw_lines[start - 1:end]
     videos: list[dict[str, Any]] = []
     channel: str | None = None
     skipped_shorts = 0
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for line in raw_lines:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
