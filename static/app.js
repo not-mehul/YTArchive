@@ -47,6 +47,9 @@ const state = {
   embedThumbnail: true,
   embedChapters: true,
   useArchive: false,
+  cookiesBrowser: "",
+  cookiesFile: "",
+  cookieBrowsers: [],
 };
 
 // ---------- DOM helpers ----------
@@ -199,6 +202,23 @@ function renderAdvancedPanel() {
     n.max = String(state.maxConcurrency || 4);
     n.value = String(state.concurrency || 1);
   }
+  renderCookiesPanel();
+}
+
+function renderCookiesPanel() {
+  const sel = $("#cookies-browser");
+  if (sel) {
+    const wanted = state.cookiesBrowser || "";
+    const existing = new Set(Array.from(sel.options).map((o) => o.value));
+    for (const b of state.cookieBrowsers || []) {
+      if (!existing.has(b)) {
+        sel.appendChild(el("option", { value: b }, b.charAt(0).toUpperCase() + b.slice(1)));
+      }
+    }
+    sel.value = wanted;
+  }
+  const file = $("#cookies-file");
+  if (file && document.activeElement !== file) file.value = state.cookiesFile || "";
 }
 
 // ---------- scrape / grid ----------
@@ -371,6 +391,9 @@ function applySettings(s) {
   if (typeof s.embed_thumbnail === "boolean") state.embedThumbnail = s.embed_thumbnail;
   if (typeof s.embed_chapters === "boolean") state.embedChapters = s.embed_chapters;
   if (typeof s.use_archive === "boolean") state.useArchive = s.use_archive;
+  if (typeof s.cookies_browser === "string") state.cookiesBrowser = s.cookies_browser;
+  if (typeof s.cookies_file === "string") state.cookiesFile = s.cookies_file;
+  if (Array.isArray(s.cookie_browsers)) state.cookieBrowsers = s.cookie_browsers;
   if (typeof s.last_quality === "string") state.quality = s.last_quality;
   if (Array.isArray(s.last_sponsorblock)) {
     state.sponsorblock = new Set(s.last_sponsorblock);
@@ -415,6 +438,20 @@ async function saveUseArchive() {
     await api("/api/settings", {
       method: "POST",
       body: JSON.stringify({ use_archive: state.useArchive }),
+    });
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function saveCookies() {
+  try {
+    await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({
+        cookies_browser: state.cookiesBrowser,
+        cookies_file: state.cookiesFile,
+      }),
     });
   } catch (err) {
     toast(err.message, "error");
@@ -466,7 +503,7 @@ async function queueSelected() {
 function recomputeQueuedIds() {
   state.queuedIds = new Set(
     state.queue
-      .filter((i) => i.status === "pending" || i.status === "downloading")
+      .filter((i) => i.status === "pending" || i.status === "downloading" || i.status === "paused")
       .map((i) => i.video_id)
   );
 }
@@ -509,6 +546,9 @@ function renderQItem(it) {
     if (it.eta) meta.appendChild(el("span", { class: "qchip mono" }, `eta ${it.eta}`));
     meta.appendChild(el("span", { class: "qchip mono" }, `${(it.progress || 0).toFixed(1)}%`));
   }
+  if (it.status === "paused" && (it.progress || 0) > 0) {
+    meta.appendChild(el("span", { class: "qchip mono" }, `${(it.progress || 0).toFixed(1)}% kept`));
+  }
   body.appendChild(meta);
 
   const bar = el("div", { class: `qprogress${indeterminate ? " indeterminate" : ""}` }, el("div", { class: "bar" }));
@@ -516,6 +556,31 @@ function renderQItem(it) {
   body.appendChild(bar);
 
   const actions = el("div", { class: "qactions" });
+  if (it.status === "downloading" || it.status === "pending") {
+    const pauseBtn = el("button", {
+      type: "button",
+      title: "Pause",
+      onclick: () => pauseItem(it.id),
+    }, svgEl(`<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`, 14));
+    actions.appendChild(pauseBtn);
+  }
+  if (it.status === "paused") {
+    const resumeBtn = el("button", {
+      type: "button",
+      title: "Resume",
+      onclick: () => resumeItem(it.id),
+    }, svgEl(`<polygon points="6 4 20 12 6 20 6 4"/>`, 14));
+    actions.appendChild(resumeBtn);
+  }
+  if (it.status === "downloading") {
+    const cancelBtn = el("button", {
+      type: "button",
+      title: "Cancel download",
+      class: "danger",
+      onclick: () => cancelItem(it.id),
+    }, svgEl(`<rect x="6" y="6" width="12" height="12"/>`, 14));
+    actions.appendChild(cancelBtn);
+  }
   if (it.status === "failed" || it.status === "cancelled") {
     const retryBtn = el("button", {
       type: "button",
@@ -558,6 +623,7 @@ function statusLabel(it) {
   let verb;
   if (it.status === "pending")          verb = "Pending";
   else if (it.status === "downloading") verb = it.message || "Downloading";
+  else if (it.status === "paused")      verb = "Paused";
   else if (it.status === "completed")   verb = "Completed";
   else if (it.status === "failed")      verb = `Failed · ${it.message || ""}`.trim();
   else if (it.status === "cancelled")   verb = "Cancelled";
@@ -578,6 +644,24 @@ async function removeItem(id) {
 async function retryItem(id) {
   try {
     await api("/api/queue/retry", { method: "POST", body: JSON.stringify({ id }) });
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function cancelItem(id) {
+  try {
+    await api("/api/queue/cancel", { method: "POST", body: JSON.stringify({ id }) });
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function pauseItem(id) {
+  try {
+    await api("/api/queue/pause-item", { method: "POST", body: JSON.stringify({ id }) });
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function resumeItem(id) {
+  try {
+    await api("/api/queue/resume-item", { method: "POST", body: JSON.stringify({ id }) });
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -689,6 +773,8 @@ function handleEvent(payload) {
       if ("embed_thumbnail" in payload) { state.embedThumbnail = !!payload.embed_thumbnail; advancedDirty = true; }
       if ("embed_chapters" in payload) { state.embedChapters = !!payload.embed_chapters; advancedDirty = true; }
       if ("use_archive" in payload) { state.useArchive = !!payload.use_archive; advancedDirty = true; }
+      if ("cookies_browser" in payload) { state.cookiesBrowser = payload.cookies_browser || ""; advancedDirty = true; }
+      if ("cookies_file" in payload) { state.cookiesFile = payload.cookies_file || ""; advancedDirty = true; }
       if (advancedDirty) renderAdvancedPanel();
       break;
     }
@@ -756,6 +842,17 @@ function bind() {
   if (archive) archive.addEventListener("change", () => {
     state.useArchive = archive.checked;
     saveUseArchive();
+  });
+
+  const cookiesBrowser = $("#cookies-browser");
+  if (cookiesBrowser) cookiesBrowser.addEventListener("change", () => {
+    state.cookiesBrowser = cookiesBrowser.value || "";
+    saveCookies();
+  });
+  const cookiesFile = $("#cookies-file");
+  if (cookiesFile) cookiesFile.addEventListener("change", () => {
+    state.cookiesFile = cookiesFile.value.trim();
+    saveCookies();
   });
 
   const concurrency = $("#concurrency-input");

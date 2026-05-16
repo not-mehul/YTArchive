@@ -554,6 +554,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 .qitem.downloading { border-color: var(--amber); }
 .qitem.completed { border-color: var(--sage); }
 .qitem.failed { border-color: var(--err-fg); }
+.qitem.paused { border-color: var(--text-decor); }
 
 .qthumb {
   width: 88px; height: 50px;
@@ -589,6 +590,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 .qmeta .qstatus.completed { color: var(--sage); }
 .qmeta .qstatus.failed { color: var(--err-fg); }
 .qmeta .qstatus.cancelled { color: var(--text-decor); }
+.qmeta .qstatus.paused { color: var(--text-decor); }
 .qmeta .qchip {
   font-family: var(--sans);
   font-size: 0.625rem;
@@ -658,6 +660,8 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   border-color: var(--text-mute);
 }
 .qactions button:disabled { opacity: 0.4; cursor: not-allowed; }
+.qactions button.danger { color: var(--err-fg); border-color: var(--err-fg); }
+.qactions button.danger:hover:not(:disabled) { background: rgba(255, 80, 80, 0.08); }
 
 /* --- footer --------------------------------------------------------------- */
 
@@ -748,6 +752,22 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 #concurrency-input:focus { border-color: var(--text-mute); }
 
 .archive-check { margin-top: 0.25rem; }
+
+#cookies-browser,
+#cookies-file {
+  font-family: var(--mono);
+  font-size: 0.875rem;
+  color: var(--text-high);
+  background: rgba(12, 10, 8, 0.8);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.5rem 0.6rem;
+  outline: none;
+}
+#cookies-browser { min-width: 8rem; }
+#cookies-file { flex: 1; min-width: 12rem; }
+#cookies-browser:focus,
+#cookies-file:focus { border-color: var(--text-mute); }
 
 /* --- datalist (visual cue only, browser styles the dropdown) ------------- */
 input[list]::-webkit-calendar-picker-indicator {
