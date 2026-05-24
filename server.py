@@ -647,17 +647,26 @@ class QueueManager:
             self._dispatched.discard(item.id)
 
         last_emit = 0.0
+        last_progress = -1.0
+        last_message: str | None = None
         assert proc.stdout is not None
         try:
             for raw in proc.stdout:
                 line = raw.rstrip("\n")
                 self._parse_progress(item, line)
                 now = time.time()
-                if now - last_emit > 0.2:
+                changed = item.progress != last_progress or item.message != last_message
+                if changed and now - last_emit > 0.15:
                     self._broadcast({"type": "progress", "item": asdict(item)})
                     last_emit = now
+                    last_progress = item.progress
+                    last_message = item.message
         except Exception:
             pass
+        # Flush any tail update so the bar reaches its final value before
+        # the completion event arrives.
+        if item.progress != last_progress or item.message != last_message:
+            self._broadcast({"type": "progress", "item": asdict(item)})
         rc = proc.wait()
         with self._lock:
             self._active_procs.pop(item.id, None)
@@ -1266,7 +1275,9 @@ def api_events() -> Response:
         "X-Accel-Buffering": "no",
         "Connection": "keep-alive",
     }
-    return Response(stream(), mimetype="text/event-stream", headers=headers)
+    response = Response(stream(), mimetype="text/event-stream", headers=headers)
+    response.direct_passthrough = True
+    return response
 
 
 def main() -> None:

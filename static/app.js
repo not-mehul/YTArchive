@@ -527,7 +527,7 @@ function renderQueue() {
 
 function renderQItem(it) {
   const indeterminate = it.status === "downloading" && INDETERMINATE_MESSAGES.has(it.message || "");
-  const node = el("div", { class: `qitem ${it.status}`, "data-id": it.id });
+  const node = el("div", { class: `qitem ${it.status}`, "data-id": it.id, "data-status": it.status });
   const thumb = el("div", { class: "qthumb" });
   if (it.thumbnail) thumb.appendChild(el("img", { src: it.thumbnail, alt: "", loading: "lazy" }));
   const body = el("div", { class: "qbody" });
@@ -542,9 +542,13 @@ function renderQItem(it) {
       `SponsorBlock · ${n} categor${n === 1 ? "y" : "ies"}`));
   }
   if (it.status === "downloading") {
-    if (it.speed) meta.appendChild(el("span", { class: "qchip mono" }, it.speed));
-    if (it.eta) meta.appendChild(el("span", { class: "qchip mono" }, `eta ${it.eta}`));
-    meta.appendChild(el("span", { class: "qchip mono" }, `${(it.progress || 0).toFixed(1)}%`));
+    const speedChip = el("span", { class: "qchip mono qchip-speed" }, it.speed || "");
+    if (!it.speed) speedChip.hidden = true;
+    meta.appendChild(speedChip);
+    const etaChip = el("span", { class: "qchip mono qchip-eta" }, it.eta ? `eta ${it.eta}` : "");
+    if (!it.eta) etaChip.hidden = true;
+    meta.appendChild(etaChip);
+    meta.appendChild(el("span", { class: "qchip mono qchip-pct" }, `${(it.progress || 0).toFixed(1)}%`));
   }
   if (it.status === "paused" && (it.progress || 0) > 0) {
     meta.appendChild(el("span", { class: "qchip mono" }, `${(it.progress || 0).toFixed(1)}% kept`));
@@ -784,8 +788,38 @@ function handleEvent(payload) {
 function patchQItem(it) {
   const node = document.querySelector(`.qitem[data-id="${it.id}"]`);
   if (!node) { renderQueue(); return; }
-  const fresh = renderQItem(it);
-  node.replaceWith(fresh);
+
+  // Status changes (pending → downloading → completed/failed) restructure the
+  // row enough that a full re-render is cleaner.
+  const prevStatus = node.dataset.status || "";
+  if (prevStatus !== it.status) {
+    const fresh = renderQItem(it);
+    node.replaceWith(fresh);
+    return;
+  }
+
+  // Hot path: in-flight progress updates. Mutate fields in place so the bar
+  // transitions smoothly instead of being torn down on every event.
+  const indeterminate = it.status === "downloading" && INDETERMINATE_MESSAGES.has(it.message || "");
+  const bar = node.querySelector(".qprogress");
+  if (bar) {
+    bar.classList.toggle("indeterminate", indeterminate);
+    const inner = bar.firstChild;
+    if (inner) {
+      inner.style.width = indeterminate ? "100%" : `${Math.max(0, Math.min(100, it.progress || 0))}%`;
+    }
+  }
+  const verb = node.querySelector(".qstatus .status-verb");
+  if (verb) verb.textContent = it.status === "downloading" ? (it.message || "Downloading") : verb.textContent;
+
+  const speedEl = node.querySelector(".qchip-speed");
+  const etaEl = node.querySelector(".qchip-eta");
+  const pctEl = node.querySelector(".qchip-pct");
+  if (speedEl) speedEl.textContent = it.speed || "";
+  if (speedEl) speedEl.hidden = !it.speed;
+  if (etaEl) etaEl.textContent = it.eta ? `eta ${it.eta}` : "";
+  if (etaEl) etaEl.hidden = !it.eta;
+  if (pctEl) pctEl.textContent = `${(it.progress || 0).toFixed(1)}%`;
 }
 
 // ---------- bindings ----------
