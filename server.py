@@ -747,9 +747,17 @@ class QueueManager:
         cmd.append(item.url)
         return cmd
 
+    # yt-dlp space-pads the preformatted progress fields (e.g. "  5.0%") and
+    # emits "Unknown B/s" for an unknown speed — both contain spaces, so we
+    # consume the padding after each "key=" and capture lazily up to the next
+    # key rather than assuming a single whitespace-free token per field.
     _YTAP_RE = re.compile(
-        r"\[ytap\]\s+pct=(?P<pct>\S+)\s+speed=(?P<speed>\S+)\s+eta=(?P<eta>\S+)"
-        r"\s+vcodec=(?P<vcodec>\S+)\s+acodec=(?P<acodec>\S+)\s+ext=(?P<ext>\S+)"
+        r"\[ytap\]\s+pct=\s*(?P<pct>.*?)\s+"
+        r"speed=\s*(?P<speed>.*?)\s+"
+        r"eta=\s*(?P<eta>.*?)\s+"
+        r"vcodec=\s*(?P<vcodec>.*?)\s+"
+        r"acodec=\s*(?P<acodec>.*?)\s+"
+        r"ext=\s*(?P<ext>\S+)"
     )
     _PROGRESS_RE = re.compile(
         r"\[download\]\s+(?P<pct>[\d.]+)%(?:\s+of\s+~?\s*(?P<size>[\d.]+\w+))?"
@@ -804,6 +812,8 @@ class QueueManager:
             return None
         v = v.strip()
         if not v or v in ("NA", "N/A", "Unknown", "--"):
+            return None
+        if v.startswith("Unknown") or v.startswith("--"):
             return None
         return v
 
