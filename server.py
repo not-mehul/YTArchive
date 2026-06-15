@@ -698,21 +698,17 @@ class QueueManager:
     def _build_command(self, item: QueueItem) -> list[str]:
         preset = QUALITY_PRESETS[item.quality]
         out_template = str(self._download_dir / "%(uploader)s/%(title)s [%(id)s].%(ext)s")
-        # Custom progress template so every line carries codec info — that's
-        # how we tell which pass is video vs audio vs thumbnail. The default
-        # progress format hides this and the "Destination:" sidecar line is
-        # unreliable across yt-dlp versions / platforms.
-        progress_tpl = (
-            "download:[ytap] pct=%(progress._percent_str)s "
-            "speed=%(progress._speed_str)s eta=%(progress._eta_str)s "
-            "vcodec=%(info.vcodec)s acodec=%(info.acodec)s ext=%(info.ext)s"
-        )
+        # Use yt-dlp's default, newline-delimited progress output ("[download]
+        # 12.3% of 10.00MiB at 1.20MiB/s ETA 00:07"). It is by far the most
+        # stable line format across versions, and `_PROGRESS_RE` parses it. The
+        # per-pass label (video / audio / thumbnail) comes from the preceding
+        # "[download] Destination: …" line. A custom --progress-template was
+        # tried here but its space-padded fields proved too brittle to parse,
+        # which left the bar stuck at 0% until completion.
         cmd: list[str] = [
             "yt-dlp",
             "--newline",
             "--no-colors",
-            "--progress",
-            "--progress-template", progress_tpl,
             "--no-playlist",
             "-o", out_template,
             "--print", "after_move:filepath:%(filepath)s",
@@ -747,18 +743,6 @@ class QueueManager:
         cmd.append(item.url)
         return cmd
 
-    # yt-dlp space-pads the preformatted progress fields (e.g. "  5.0%") and
-    # emits "Unknown B/s" for an unknown speed — both contain spaces, so we
-    # consume the padding after each "key=" and capture lazily up to the next
-    # key rather than assuming a single whitespace-free token per field.
-    _YTAP_RE = re.compile(
-        r"\[ytap\]\s+pct=\s*(?P<pct>.*?)\s+"
-        r"speed=\s*(?P<speed>.*?)\s+"
-        r"eta=\s*(?P<eta>.*?)\s+"
-        r"vcodec=\s*(?P<vcodec>.*?)\s+"
-        r"acodec=\s*(?P<acodec>.*?)\s+"
-        r"ext=\s*(?P<ext>\S+)"
-    )
     _PROGRESS_RE = re.compile(
         r"\[download\]\s+(?P<pct>[\d.]+)%(?:\s+of\s+~?\s*(?P<size>[\d.]+\w+))?"
         r"(?:\s+at\s+(?P<speed>[^\s]+))?"
@@ -772,8 +756,6 @@ class QueueManager:
     _VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".m4v", ".mov", ".avi", ".ts"}
     _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
-    _IMAGE_EXT_NAMES = {"jpg", "jpeg", "png", "webp", "gif"}
-
     def _classify_destination(self, path: str) -> str:
         ext = Path(path).suffix.lower()
         if ext in self._AUDIO_EXTS:
@@ -782,19 +764,6 @@ class QueueManager:
             return "Downloading video"
         if ext in self._IMAGE_EXTS:
             return "Downloading thumbnail"
-        return "Downloading"
-
-    def _classify_codecs(self, vcodec: str, acodec: str, ext: str) -> str:
-        v_none = vcodec in ("none", "NA", "")
-        a_none = acodec in ("none", "NA", "")
-        if ext.lower() in self._IMAGE_EXT_NAMES:
-            return "Downloading thumbnail"
-        if v_none and not a_none:
-            return "Downloading audio"
-        if a_none and not v_none:
-            return "Downloading video"
-        if not v_none and not a_none:
-            return "Downloading"  # combined / muxed stream
         return "Downloading"
 
     def _looks_age_restricted(self, text: str) -> bool:
@@ -820,31 +789,12 @@ class QueueManager:
     def _parse_progress(self, item: QueueItem, line: str) -> None:
         # Strip carriage returns; yt-dlp on Windows emits CRLF.
         line = line.rstrip("\r")
-        yt = self._YTAP_RE.search(line)
-        if yt:
-            pct_raw = yt.group("pct").rstrip("%").strip()
-            try:
-                pct = float(pct_raw)
-            except ValueError:
-                pct = None
-            speed = self._clean_tpl_value(yt.group("speed"))
-            eta = self._clean_tpl_value(yt.group("eta"))
-            phase = self._classify_codecs(
-                yt.group("vcodec"), yt.group("acodec"), yt.group("ext"),
-            )
-            with self._lock:
-                if pct is not None:
-                    item.progress = pct
-                item.speed = speed
-                item.eta = eta
-                item.message = phase
-            return
         m = self._PROGRESS_RE.search(line)
         if m:
             with self._lock:
                 item.progress = float(m.group("pct"))
-                item.speed = m.group("speed")
-                item.eta = m.group("eta")
+                item.speed = self._clean_tpl_value(m.group("speed"))
+                item.eta = self._clean_tpl_value(m.group("eta"))
                 # Preserve "Downloading video / audio / thumbnail" phase set
                 # by the most recent Destination line.
                 if not (item.message or "").startswith("Downloading"):
