@@ -825,6 +825,45 @@ function patchQItem(it) {
   if (pctEl) pctEl.textContent = `${(it.progress || 0).toFixed(1)}%`;
 }
 
+// ---------- theme (Dusk ⇄ Dawn) ----------
+
+const THEME_COLORS = { dark: "#0f0d0b", light: "#efe6d8" };
+
+function applyTheme(mode) {
+  const light = mode === "light";
+  if (light) document.documentElement.setAttribute("data-theme", "light");
+  else document.documentElement.removeAttribute("data-theme");
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", light ? THEME_COLORS.light : THEME_COLORS.dark);
+  const tog = $("#theme-toggle");
+  if (tog) {
+    tog.setAttribute("aria-checked", light ? "true" : "false");
+    tog.setAttribute(
+      "aria-label",
+      light ? "Switch to Dusk (dark) theme" : "Switch to Dawn (light) theme",
+    );
+  }
+}
+
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+}
+
+function toggleTheme() {
+  const next = currentTheme() === "light" ? "dark" : "light";
+  applyTheme(next);
+  try { localStorage.setItem("theme", next); } catch (e) { /* private mode */ }
+}
+
+function initTheme() {
+  // The inline <head> script has already set <html data-theme> before paint;
+  // re-apply to sync the toggle's aria state and the theme-color meta.
+  let stored = null;
+  try { stored = localStorage.getItem("theme"); } catch (e) { /* private mode */ }
+  const prefersLight = window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches;
+  applyTheme(stored || (prefersLight ? "light" : "dark"));
+}
+
 // ---------- bindings ----------
 
 function bind() {
@@ -905,9 +944,13 @@ function bind() {
   $("#q-start").addEventListener("click", startQueue);
   $("#q-pause").addEventListener("click", pauseQueue);
   $("#q-clear").addEventListener("click", clearFinished);
+
+  const themeToggle = $("#theme-toggle");
+  if (themeToggle) themeToggle.addEventListener("click", toggleTheme);
 }
 
 function init() {
+  initTheme();
   renderSponsorBlock();
   renderQuality();
   updateQualityHint();

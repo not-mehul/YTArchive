@@ -2,7 +2,12 @@
    YTArchive · Editorial Dusk
    --------------------------------------------------------------------------- */
 
+/* Editorial Dusk (dark) is the default; Editorial Dawn (light) overrides the
+   same token names under [data-theme="light"]. Every rule references a token,
+   so switching themes is a single attribute on <html> — see app.js. */
 :root {
+  color-scheme: dark;
+
   --surface-1: #14110e;
   --surface-2: #0f0d0b;
   --surface-3: #0c0a08;
@@ -26,6 +31,7 @@
 
   /* surfaces & component fills — every color routes through a token (§1.3) */
   --on-accent: #1c1917;
+  --on-overlay: #f5ecd9;          /* light text on the always-dark thumb overlay */
   --amber-bright-hover: #fef3c7;
   --panel-bg: rgba(20, 17, 14, 0.6);
   --panel-bg-faint: rgba(20, 17, 14, 0.4);
@@ -35,9 +41,56 @@
   --disabled-bg: rgba(41, 37, 36, 0.6);
   --modal-bg: rgba(12, 10, 8, 0.92);
 
+  /* RGB triples for composable alpha (glows, halos) — flip with the theme */
+  --amber-rgb: 212, 165, 116;
+  --sage-rgb: 159, 179, 160;
+  --cream-rgb: 245, 236, 217;
+
   --serif: "Fraunces", "Iowan Old Style", "Apple Garamond", Baskerville, Georgia, "Times New Roman", serif;
   --sans: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* warm paper cream, never stark white */
+  --surface-1: #f3ece0;
+  --surface-2: #efe6d8;
+  --surface-3: #e9dfce;
+  /* accents deepened so they hold contrast against cream */
+  --amber: #b07d3e;
+  --sage: #6f8770;
+  --amber-bright: #e0a92a;
+  --cream: #211d17;               /* heading role inverts to a warm near-black */
+  --text-high: #1c1917;
+  --text: #2a2620;
+  --text-strong: #292420;
+  --text-body: #3a342c;
+  --text-mute: #6b6358;
+  --text-decor: #938a7c;
+  --err-fg: #c0392b;
+  --err-bg: rgba(192, 57, 43, 0.12);
+  --notice-fg: #c89320;
+  --notice-bg: rgba(224, 169, 42, 0.14);
+  --border: #cdbfa6;
+  --border-soft: rgba(120, 105, 80, 0.32);
+  --border-hair: rgba(120, 105, 80, 0.22);
+
+  --on-accent: #1c1917;           /* bright accent stays light-ish → dark text */
+  --on-overlay: #f5ecd9;          /* overlay chip is dark in both themes */
+  --amber-bright-hover: #c89320;
+  --panel-bg: rgba(255, 251, 243, 0.7);
+  --panel-bg-faint: rgba(255, 251, 243, 0.45);
+  --input-bg: rgba(255, 252, 245, 0.9);
+  --chip-bg: rgba(245, 238, 226, 0.85);
+  --hover-bg: rgba(205, 191, 166, 0.3);
+  --disabled-bg: rgba(220, 210, 192, 0.6);
+  --modal-bg: rgba(252, 248, 240, 0.98);
+
+  --amber-rgb: 176, 125, 62;
+  --sage-rgb: 111, 135, 112;
+  --cream-rgb: 120, 95, 50;
 }
 
 * { box-sizing: border-box; }
@@ -73,23 +126,23 @@ body {
 .glow-1 {
   top: -20%; right: -15%; width: 900px; height: 900px;
   background: radial-gradient(circle,
-    rgba(212, 165, 116, 0.10) 0%,
-    rgba(212, 165, 116, 0.03) 30%,
+    rgba(var(--amber-rgb), 0.10) 0%,
+    rgba(var(--amber-rgb), 0.03) 30%,
     transparent 60%);
   filter: blur(40px);
 }
 .glow-2 {
   bottom: -30%; left: -20%; width: 1000px; height: 1000px;
   background: radial-gradient(circle,
-    rgba(159, 179, 160, 0.08) 0%,
-    rgba(159, 179, 160, 0.02) 35%,
+    rgba(var(--sage-rgb), 0.08) 0%,
+    rgba(var(--sage-rgb), 0.02) 35%,
     transparent 65%);
   filter: blur(50px);
 }
 .glow-3 {
   top: 40%; left: 30%; width: 600px; height: 600px;
   background: radial-gradient(circle,
-    rgba(245, 236, 217, 0.03) 0%, transparent 60%);
+    rgba(var(--cream-rgb), 0.05) 0%, transparent 60%);
   filter: blur(60px);
 }
 
@@ -189,6 +242,60 @@ body {
 .masthead {
   margin-bottom: 3.5rem;
 }
+.masthead-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+}
+.masthead-top .eyebrow { margin: 0; }
+
+/* --- theme toggle (Dusk ⇄ Dawn) — §8.9 ----------------------------------- */
+
+.theme-toggle {
+  position: relative;
+  flex-shrink: 0;
+  width: 60px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--input-bg);
+  cursor: pointer;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+.theme-toggle:hover { border-color: var(--text-mute); }
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+.theme-toggle .theme-ic {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  z-index: 2;
+  pointer-events: none;
+}
+.theme-toggle .theme-moon { left: 8px; color: var(--on-accent); }
+.theme-toggle .theme-sun  { right: 8px; color: var(--text-decor); }
+.theme-toggle .theme-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 24px;
+  height: 24px;
+  border-radius: 2px;
+  background: var(--amber);
+  z-index: 1;
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-theme="light"] .theme-toggle .theme-knob { transform: translateX(30px); }
+[data-theme="light"] .theme-toggle .theme-moon { color: var(--text-decor); }
+[data-theme="light"] .theme-toggle .theme-sun  { color: var(--on-accent); }
 
 /* --- section frame -------------------------------------------------------- */
 
@@ -274,7 +381,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 .btn-primary {
   background: var(--amber-bright);
   color: var(--on-accent);
-  box-shadow: 0 0 40px rgba(212, 165, 116, 0.25);
+  box-shadow: 0 0 40px rgba(var(--amber-rgb), 0.25);
 }
 .btn-primary:hover:not(:disabled) { background: var(--amber-bright-hover); }
 .btn-primary:disabled {
@@ -290,7 +397,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .btn-secondary:hover:not(:disabled) {
   background: var(--text-high);
-  color: var(--on-accent);
+  color: var(--surface-1);
 }
 .btn-secondary:disabled {
   border-color: var(--border);
@@ -369,7 +476,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 .video-card.selected {
   border-color: var(--amber-bright);
   background: var(--chip-bg);
-  box-shadow: 0 0 30px rgba(212, 165, 116, 0.15);
+  box-shadow: 0 0 30px rgba(var(--amber-rgb), 0.15);
 }
 .video-card.queued { opacity: 0.55; cursor: default; }
 
@@ -387,7 +494,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   bottom: 0.4rem; right: 0.4rem;
   font-family: var(--mono);
   font-size: 0.6875rem;
-  color: var(--cream);
+  color: var(--on-overlay);
   background: rgba(12, 10, 8, 0.85);
   padding: 0.15rem 0.4rem;
   border-radius: 2px;
@@ -511,9 +618,9 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
-.seg button:hover { background: var(--hover-bg); }
+.seg button:hover { background: var(--hover-bg); color: var(--text-high); }
 .seg button.active {
-  background: var(--text-high);
+  background: var(--amber-bright);
   color: var(--on-accent);
 }
 
