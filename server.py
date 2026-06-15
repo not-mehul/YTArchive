@@ -1005,6 +1005,10 @@ def scrape_channel(url: str, start: int, end: int, ignore_shorts: bool = True) -
     raw_lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
     # Drop everything before this page's window so we don't re-emit page 1.
     raw_lines = raw_lines[start - 1:end]
+    # Entries actually present in this window, before Shorts filtering. The UI
+    # uses this (not the post-filter video count) to decide whether a further
+    # page exists — otherwise a window full of hidden Shorts looks like the end.
+    page_entries = len(raw_lines)
     videos: list[dict[str, Any]] = []
     channel: str | None = None
     skipped_shorts = 0
@@ -1047,6 +1051,7 @@ def scrape_channel(url: str, start: int, end: int, ignore_shorts: bool = True) -
         "start": start,
         "end": end,
         "count": len(videos),
+        "page_entries": page_entries,
         "skipped_shorts": skipped_shorts,
         "ignore_shorts": ignore_shorts,
     }
