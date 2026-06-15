@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="YTArchive">
+  <!-- Editorial Dusk mark: amber "download into the archive" glyph on a near-black field -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14110e"/>
+      <stop offset="1" stop-color="#0c0a08"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="32" height="32" rx="6" fill="url(#bg)"/>
+  <!-- faint amber inner edge -->
+  <rect x="1.25" y="1.25" width="29.5" height="29.5" rx="5" fill="none"
+        stroke="#d4a574" stroke-opacity="0.18" stroke-width="1"/>
+  <!-- download arrow -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 7 V18" stroke="#fcd34d" stroke-width="2.6"/>
+    <path d="M10.5 14 L16 19.5 L21.5 14" stroke="#fcd34d" stroke-width="2.6"/>
+    <!-- archive shelf -->
+    <path d="M9 24 H23" stroke="#d4a574" stroke-width="2.6"/>
+  </g>
+</svg>

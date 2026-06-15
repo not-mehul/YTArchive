@@ -5,6 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0f0d0b" />
   <title>YTArchive — channel archival</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <script>
+    // Apply the stored / preferred theme before first paint to avoid a flash.
+    (function () {
+      try {
+        var stored = localStorage.getItem("theme");
+        var prefersLight = window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches;
+        var mode = stored || (prefersLight ? "light" : "dark");
+        if (mode === "light") {
+          document.documentElement.setAttribute("data-theme", "light");
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", "#efe6d8");
+        }
+      } catch (e) {}
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,400&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
@@ -19,7 +35,22 @@
 
   <main class="page">
     <header class="masthead">
-      <p class="eyebrow">YTArchive · v1</p>
+      <div class="masthead-top">
+        <p class="eyebrow">YTArchive · v1</p>
+        <button
+          type="button"
+          id="theme-toggle"
+          class="theme-toggle"
+          role="switch"
+          aria-checked="false"
+          aria-label="Switch to Dawn (light) theme"
+          title="Toggle theme"
+        >
+          <svg class="theme-ic theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>
+          <svg class="theme-ic theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+          <span class="theme-knob" aria-hidden="true"></span>
+        </button>
+      </div>
       <h1 class="display">
         A reading-room for <em>channel archival</em>.
       </h1>
