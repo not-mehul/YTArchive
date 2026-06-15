@@ -267,7 +267,10 @@ function renderMeta(data) {
   $("#meta-count").textContent = String(data.count || 0);
   $("#meta-selected").textContent = String(state.selected.size);
   $("#prev-page").disabled = state.page <= 1;
-  $("#next-page").disabled = (data.count || 0) < (data.page_size || 50);
+  // Page off the raw window size, not the post-filter video count — a page
+  // whose entries are all hidden Shorts still has more pages behind it.
+  const windowSize = data.page_entries != null ? data.page_entries : (data.count || 0);
+  $("#next-page").disabled = windowSize < (data.page_size || 50);
 }
 
 function visibleVideos() {
@@ -625,7 +628,7 @@ function statusIcon(status) {
 
 function statusLabel(it) {
   let verb;
-  if (it.status === "pending")          verb = "Pending";
+  if (it.status === "pending")          verb = "Queued";
   else if (it.status === "downloading") verb = it.message || "Downloading";
   else if (it.status === "paused")      verb = "Paused";
   else if (it.status === "completed")   verb = "Completed";
