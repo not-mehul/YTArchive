@@ -1224,14 +1224,14 @@ def api_events() -> Response:
 
     def stream():
         snapshot = json.dumps({"type": "snapshot", "items": manager.snapshot()})
-        yield f"data: {snapshot}\n\n"
+        yield f"data: {snapshot}\n\n".encode("utf-8")
         try:
             while True:
                 try:
                     payload = listener.get(timeout=15)
-                    yield f"data: {payload}\n\n"
+                    yield f"data: {payload}\n\n".encode("utf-8")
                 except queue.Empty:
-                    yield ": keepalive\n\n"
+                    yield b": keepalive\n\n"
         finally:
             manager.drop(listener)
 
