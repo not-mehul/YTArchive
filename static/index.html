@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0f0d0b" />
-  <title>YTArchive — channel archival</title>
+  <title>Cura</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <script>
     // Apply the stored / preferred theme before first paint to avoid a flash.
@@ -36,40 +36,36 @@
   <main class="page">
     <header class="masthead">
       <div class="masthead-top">
-        <p class="eyebrow">YTArchive · v1</p>
+        <h1 class="brand">Cura</h1>
         <div class="masthead-right">
           <span class="conn-pill" id="conn-pill" data-state="connecting" title="Live connection to the bridge">
             <span class="conn-dot"></span><span class="conn-label">connecting…</span>
           </span>
-        <button
-          type="button"
-          id="theme-toggle"
-          class="theme-toggle"
-          role="switch"
-          aria-checked="false"
-          aria-label="Switch to Dawn (light) theme"
-          title="Toggle theme"
-        >
-          <svg class="theme-ic theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>
-          <svg class="theme-ic theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
-          <span class="theme-knob" aria-hidden="true"></span>
-        </button>
+          <button type="button" id="settings-btn" class="icon-btn" title="Settings" aria-label="Open settings">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          </button>
+          <button
+            type="button"
+            id="theme-toggle"
+            class="theme-toggle"
+            role="switch"
+            aria-checked="false"
+            aria-label="Switch to Dawn (light) theme"
+            title="Toggle theme"
+          >
+            <svg class="theme-ic theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>
+            <svg class="theme-ic theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+            <span class="theme-knob" aria-hidden="true"></span>
+          </button>
         </div>
       </div>
       <div class="disk-banner" id="disk-banner" hidden></div>
-      <h1 class="display">
-        A reading-room for <em>channel archival</em>.
-      </h1>
-      <p class="lede">
-        Scrape a YouTube channel, trim the fluff with SponsorBlock,
-        and save the rest. Everything runs locally.
-      </p>
     </header>
 
     <section class="section" aria-labelledby="src-title">
       <div class="section-head">
         <span class="marker">Source.</span>
-        <h2 id="src-title" class="section-title">Channel or playlist URL</h2>
+        <h2 id="src-title" class="section-title">Channel or playlist</h2>
       </div>
       <form id="scrape-form" class="source-row" autocomplete="off">
         <input
@@ -99,17 +95,12 @@
       </div>
       <p class="hint" id="scrape-hint">
         Paste a channel/playlist URL or an <span class="mono">@handle</span>, or
-        type a name to search. Videos load in pages of 50; filters &amp; sort
-        apply across the whole channel.
+        type a name to search. Click a thumbnail to queue it instantly.
       </p>
     </section>
 
     <section class="section channel-meta" id="channel-meta" hidden>
       <div class="meta-grid">
-        <div class="meta-cell">
-          <span class="label">Channel</span>
-          <span class="meta-value" id="meta-channel">—</span>
-        </div>
         <div class="meta-cell">
           <span class="label">Page</span>
           <span class="meta-value mono" id="meta-page">1</span>
@@ -124,237 +115,91 @@
         </div>
       </div>
       <div class="meta-actions">
-        <button class="btn btn-ghost" id="prev-page" type="button" disabled>
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
-          Previous
+        <button class="btn btn-ghost btn-icon" id="prev-page" type="button" disabled title="Previous page" aria-label="Previous page">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
         </button>
-        <button class="btn btn-ghost" id="next-page" type="button">
-          Next
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg>
+        <button class="btn btn-ghost btn-icon" id="next-page" type="button" title="Next page" aria-label="Next page">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg>
         </button>
         <span class="spacer"></span>
-        <span class="queue-config-summary mono" id="queue-config-summary" title="Set under Configuration below"></span>
-        <button class="btn btn-ghost" id="select-page" type="button">Select page</button>
-        <button class="btn btn-ghost" id="clear-selection" type="button">Clear</button>
-        <button class="btn btn-primary" id="queue-selected" type="button" disabled>
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
-          Queue selected
+        <button class="btn btn-ghost btn-icon" id="select-page" type="button" title="Queue every video on this page" aria-label="Queue every video on this page">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+        </button>
+        <button class="btn btn-ghost btn-icon" id="clear-selection" type="button" title="Unqueue this page" aria-label="Unqueue this page">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg>
         </button>
       </div>
     </section>
 
     <section class="section grid-section" id="grid-section" hidden>
       <div class="grid-filter-row">
-        <input
-          id="grid-filter"
-          type="text"
-          spellcheck="false"
-          placeholder="Search titles across the whole channel…"
-        />
-        <select id="sort-select" aria-label="Sort order">
-          <option value="newest">Newest</option>
-          <option value="oldest">Oldest</option>
-          <option value="longest">Longest</option>
-          <option value="shortest">Shortest</option>
-          <option value="most_viewed">Most viewed</option>
-          <option value="least_viewed">Least viewed</option>
-        </select>
-        <button type="button" class="btn btn-ghost" id="toggle-filters">Filters</button>
+        <div class="filter-search">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3-3"></path></svg>
+          <input
+            id="grid-filter"
+            type="text"
+            spellcheck="false"
+            placeholder="Search titles across the whole channel…"
+          />
+        </div>
+        <label class="sort-control">
+          <span class="sort-label">Sort</span>
+          <select id="sort-select" aria-label="Sort order">
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="longest">Longest</option>
+            <option value="shortest">Shortest</option>
+            <option value="most_viewed">Most viewed</option>
+            <option value="least_viewed">Least viewed</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-ghost" id="toggle-filters">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"></path></svg>
+          Filters
+        </button>
         <span class="filter-count mono" id="filter-count"></span>
       </div>
       <div class="advanced-filters" id="advanced-filters" hidden>
-        <div class="filter-field">
-          <span class="label">Duration (sec)</span>
-          <div class="range-pair">
-            <input id="f-dur-min" type="number" min="0" step="1" placeholder="min" />
-            <input id="f-dur-max" type="number" min="0" step="1" placeholder="max" />
+        <div class="filter-grid">
+          <div class="filter-field">
+            <span class="label">Duration · seconds</span>
+            <div class="range-pair">
+              <input id="f-dur-min" type="number" min="0" step="1" placeholder="min" />
+              <span class="range-dash">–</span>
+              <input id="f-dur-max" type="number" min="0" step="1" placeholder="max" />
+            </div>
+          </div>
+          <div class="filter-field">
+            <span class="label">Views</span>
+            <div class="range-pair">
+              <input id="f-views-min" type="number" min="0" step="1" placeholder="min" />
+              <span class="range-dash">–</span>
+              <input id="f-views-max" type="number" min="0" step="1" placeholder="max" />
+            </div>
+          </div>
+          <div class="filter-field">
+            <span class="label">Upload date</span>
+            <div class="range-pair">
+              <input id="f-date-from" type="date" />
+              <span class="range-dash">–</span>
+              <input id="f-date-to" type="date" />
+            </div>
           </div>
         </div>
-        <div class="filter-field">
-          <span class="label">Views</span>
-          <div class="range-pair">
-            <input id="f-views-min" type="number" min="0" step="1" placeholder="min" />
-            <input id="f-views-max" type="number" min="0" step="1" placeholder="max" />
+        <div class="filter-footer">
+          <p class="hint" id="filter-note">
+            Filters run across the whole channel. Duration/view/date filters apply
+            only where YouTube exposes that metadata; titles always match.
+          </p>
+          <div class="filter-actions">
+            <button type="button" class="btn btn-ghost" id="reset-filters">Reset</button>
+            <button type="button" class="btn btn-primary" id="apply-filters">Apply</button>
           </div>
         </div>
-        <div class="filter-field">
-          <span class="label">Upload date</span>
-          <div class="range-pair">
-            <input id="f-date-from" type="date" />
-            <input id="f-date-to" type="date" />
-          </div>
-        </div>
-        <div class="filter-actions">
-          <button type="button" class="btn btn-ghost" id="apply-filters">Apply</button>
-          <button type="button" class="btn btn-ghost" id="reset-filters">Reset</button>
-        </div>
-        <p class="hint" id="filter-note">
-          Filters run across the whole channel. Duration/view/date filters
-          apply only where YouTube exposes that metadata (often absent in the
-          fast channel listing); titles always match.
-        </p>
       </div>
       <div class="video-grid" id="video-grid"></div>
       <div class="grid-empty" id="grid-empty" hidden>
         <p class="muted">No videos on this page.</p>
-      </div>
-    </section>
-
-    <section class="section config-section" aria-labelledby="cfg-title">
-      <div class="section-head">
-        <span class="marker">Configuration.</span>
-        <h2 id="cfg-title" class="section-title">What to <em>trim</em>, and at what fidelity.</h2>
-      </div>
-
-      <div class="config-grid">
-        <div class="panel">
-          <p class="label">SponsorBlock · segments</p>
-          <div class="check-grid" id="sb-grid">
-            <!-- populated by JS -->
-          </div>
-          <div class="seg sb-mode-seg" role="radiogroup" aria-label="SponsorBlock action" id="sb-mode-seg">
-            <button type="button" role="radio" data-mode="remove" class="active">Remove</button>
-            <button type="button" role="radio" data-mode="mark">Mark as chapters</button>
-          </div>
-          <p class="hint">
-            <em>Remove</em> (default) cuts the segments out — chapters and
-            embedded subtitles shift to match. <em>Mark</em> keeps the full
-            video and labels the segments as skippable chapters instead.
-          </p>
-        </div>
-
-        <div class="panel">
-          <p class="label">Quality · format preset</p>
-          <div class="seg" role="radiogroup" aria-label="Quality preset" id="quality-seg">
-            <!-- populated by JS -->
-          </div>
-          <p class="hint" id="quality-hint">
-            1080p MP4 is the default — a balance of fidelity and disk.
-            Audio presets skip video streams entirely.
-          </p>
-        </div>
-      </div>
-
-      <div class="advanced-grid">
-        <div class="panel">
-          <p class="label">Library · embed into file</p>
-          <div class="check-grid" id="embed-grid">
-            <label class="check" for="embed-metadata">
-              <input type="checkbox" id="embed-metadata" />
-              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
-              Metadata
-            </label>
-            <label class="check" for="embed-thumbnail">
-              <input type="checkbox" id="embed-thumbnail" />
-              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
-              Thumbnail
-            </label>
-            <label class="check" for="embed-chapters">
-              <input type="checkbox" id="embed-chapters" />
-              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
-              Chapters
-            </label>
-          </div>
-          <p class="hint">
-            <em>Plex &amp; Jellyfin.</em> Writes title, uploader, thumbnail,
-            and chapter markers into the file so libraries pick them up
-            without sidecars.
-          </p>
-        </div>
-
-        <div class="panel">
-          <p class="label">Subtitles &amp; captions</p>
-          <label class="check" for="subs-enabled">
-            <input type="checkbox" id="subs-enabled" />
-            <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
-            Download subtitles
-          </label>
-          <div class="concurrency-row">
-            <label for="subs-langs" class="concurrency-label">Languages</label>
-            <input id="subs-langs" type="text" spellcheck="false" placeholder="en, en-US, es" />
-          </div>
-          <div class="check-grid" id="subs-grid">
-            <label class="check" for="subs-auto">
-              <input type="checkbox" id="subs-auto" />
-              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
-              Auto-generated
-            </label>
-            <label class="check" for="subs-embed">
-              <input type="checkbox" id="subs-embed" checked />
-              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
-              Embed in file
-            </label>
-          </div>
-          <p class="hint">
-            <em>Sync.</em> Embedding cuts captions in step with SponsorBlock
-            removal, so they stay aligned. Sidecar <span class="mono">.srt</span>
-            files are not re-timed when segments are cut. Video presets only.
-          </p>
-        </div>
-
-        <div class="panel">
-          <p class="label">Cookies · for age-restricted videos</p>
-          <div class="concurrency-row">
-            <label for="cookies-browser" class="concurrency-label">Read from browser</label>
-            <select id="cookies-browser">
-              <option value="">None</option>
-            </select>
-          </div>
-          <div class="concurrency-row">
-            <label for="cookies-file" class="concurrency-label">Cookies file</label>
-            <input id="cookies-file" type="text" spellcheck="false" placeholder="path to cookies.txt (fallback)" />
-          </div>
-          <p class="hint">
-            <em>Why.</em> YouTube blocks age-restricted videos for
-            signed-out clients. Pointing yt-dlp at a logged-in browser
-            (<span class="mono">--cookies-from-browser</span>) is the
-            simplest fix. The file path is used only when no browser is
-            selected.
-          </p>
-        </div>
-
-        <div class="panel">
-          <p class="label">Concurrency &amp; archive</p>
-          <div class="concurrency-row">
-            <label for="concurrency-input" class="concurrency-label">Parallel downloads</label>
-            <input id="concurrency-input" type="number" min="1" max="4" step="1" value="1" />
-          </div>
-          <label class="check archive-check" for="use-archive">
-            <input type="checkbox" id="use-archive" />
-            <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
-            Use download archive
-          </label>
-          <p class="hint">
-            <em>Archive.</em> Skips IDs already recorded in
-            <span class="mono">archive.txt</span> at the destination
-            root — safe to re-run against the same channel.
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <section class="section dest-section">
-      <div class="section-head">
-        <span class="marker">Destination.</span>
-        <h2 class="section-title">Where downloads <em>land</em>.</h2>
-      </div>
-      <div class="dest-row">
-        <div class="dest-current">
-          <span class="label">Current path</span>
-          <p class="mono dest-path" id="dest-path">./downloads</p>
-        </div>
-        <form id="dest-form" class="dest-edit">
-          <input id="dest-input" type="text" placeholder="absolute path · ~/Videos/YT" spellcheck="false" />
-          <button type="submit" class="btn btn-ghost">Save</button>
-        </form>
-      </div>
-      <p class="hint" id="env-hint"></p>
-      <div class="engine-strip">
-        <span class="engine-tool" id="engine-ytdlp">yt-dlp <span class="mono" id="ytdlp-ver">—</span></span>
-        <button type="button" class="btn btn-ghost btn-mini" id="update-ytdlp">Update yt-dlp</button>
-        <span class="engine-tool" id="engine-ffmpeg">ffmpeg <span class="mono" id="ffmpeg-ver">—</span></span>
-        <span class="spacer"></span>
-        <span class="engine-tool mono" id="disk-readout"></span>
       </div>
     </section>
 
@@ -375,7 +220,9 @@
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
             Hold
           </button>
-          <button class="btn btn-ghost" id="q-clear" type="button">Clear finished</button>
+          <button class="btn btn-ghost btn-icon" id="q-clear" type="button" title="Clear finished" aria-label="Clear finished items">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path></svg>
+          </button>
         </div>
       </div>
       <div class="queue-stats" id="queue-stats" hidden>
@@ -387,7 +234,7 @@
       </div>
       <div class="queue-list" id="queue-list">
         <p class="muted queue-empty" id="queue-empty">
-          Nothing queued. Add videos from the grid above to populate.
+          Nothing queued. Click a thumbnail above to queue it.
         </p>
       </div>
     </section>
@@ -402,6 +249,183 @@
     </footer>
   </main>
 
+  <!-- ===== Settings modal ===== -->
+  <div class="modal-overlay" id="settings-modal" hidden>
+    <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="modal-head">
+        <h3 id="settings-title">Settings</h3>
+        <button type="button" class="modal-close" id="settings-close" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body settings-body">
+
+        <div class="settings-group">
+          <h4 class="settings-group-title">Trim &amp; fidelity</h4>
+          <div class="config-grid">
+            <div class="panel">
+              <p class="label">SponsorBlock · segments</p>
+              <div class="check-grid" id="sb-grid"></div>
+              <div class="seg sb-mode-seg" role="radiogroup" aria-label="SponsorBlock action" id="sb-mode-seg">
+                <button type="button" role="radio" data-mode="remove" class="active">Remove</button>
+                <button type="button" role="radio" data-mode="mark">Mark as chapters</button>
+              </div>
+              <p class="hint">
+                <em>Remove</em> (default) cuts the segments out — chapters and
+                embedded subtitles shift to match. <em>Mark</em> keeps the full
+                video and labels the segments as skippable chapters.
+              </p>
+            </div>
+
+            <div class="panel">
+              <p class="label">Quality · format preset</p>
+              <div class="seg" role="radiogroup" aria-label="Quality preset" id="quality-seg"></div>
+              <p class="hint" id="quality-hint">
+                1080p MP4 is the default — a balance of fidelity and disk.
+                Audio presets skip video streams entirely.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h4 class="settings-group-title">Library &amp; captions</h4>
+          <div class="config-grid">
+            <div class="panel">
+              <p class="label">Embed into file</p>
+              <div class="check-grid" id="embed-grid">
+                <label class="check" for="embed-metadata">
+                  <input type="checkbox" id="embed-metadata" />
+                  <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+                  Metadata
+                </label>
+                <label class="check" for="embed-thumbnail">
+                  <input type="checkbox" id="embed-thumbnail" />
+                  <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+                  Thumbnail
+                </label>
+                <label class="check" for="embed-chapters">
+                  <input type="checkbox" id="embed-chapters" />
+                  <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+                  Chapters
+                </label>
+              </div>
+              <p class="hint">
+                <em>Plex &amp; Jellyfin.</em> Writes title, uploader, thumbnail
+                and chapter markers into the file so libraries pick them up
+                without sidecars.
+              </p>
+            </div>
+
+            <div class="panel">
+              <p class="label">Subtitles &amp; captions</p>
+              <label class="check" for="subs-enabled">
+                <input type="checkbox" id="subs-enabled" />
+                <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+                Download subtitles
+              </label>
+              <div class="field-row">
+                <label for="subs-langs" class="field-label">Languages</label>
+                <input id="subs-langs" type="text" spellcheck="false" placeholder="en, en-US, es" />
+              </div>
+              <div class="check-grid" id="subs-grid">
+                <label class="check" for="subs-auto">
+                  <input type="checkbox" id="subs-auto" />
+                  <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+                  Auto-generated
+                </label>
+                <label class="check" for="subs-embed">
+                  <input type="checkbox" id="subs-embed" checked />
+                  <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+                  Embed in file
+                </label>
+              </div>
+              <p class="hint">
+                <em>Sync.</em> Embedding cuts captions in step with SponsorBlock
+                removal. Sidecar <span class="mono">.srt</span> files are not
+                re-timed when segments are cut. Video presets only.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h4 class="settings-group-title">Access &amp; throughput</h4>
+          <div class="config-grid">
+            <div class="panel">
+              <p class="label">Cookies · age-restricted videos</p>
+              <div class="field-row">
+                <label for="cookies-browser" class="field-label">Read from browser</label>
+                <select id="cookies-browser">
+                  <option value="">None</option>
+                </select>
+              </div>
+              <div class="field-row">
+                <label for="cookies-file" class="field-label">Cookies file</label>
+                <input id="cookies-file" type="text" spellcheck="false" placeholder="path to cookies.txt" />
+              </div>
+              <p class="hint">
+                <em>Why.</em> YouTube blocks age-restricted videos for signed-out
+                clients. Pointing yt-dlp at a logged-in browser is the simplest
+                fix. The file path is used only when no browser is selected.
+              </p>
+            </div>
+
+            <div class="panel">
+              <p class="label">Concurrency &amp; archive</p>
+              <div class="field-row">
+                <label for="concurrency-input" class="field-label">Parallel downloads</label>
+                <input id="concurrency-input" type="number" min="1" max="4" step="1" value="1" />
+              </div>
+              <label class="check archive-check" for="use-archive">
+                <input type="checkbox" id="use-archive" />
+                <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+                Use download archive
+              </label>
+              <p class="hint">
+                <em>Archive.</em> Skips IDs already recorded in
+                <span class="mono">archive.txt</span> at the destination root —
+                safe to re-run against the same channel.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h4 class="settings-group-title">Destination</h4>
+          <div class="panel">
+            <div class="dest-row">
+              <div class="dest-current">
+                <span class="label">Current path</span>
+                <p class="mono dest-path" id="dest-path">./downloads</p>
+              </div>
+              <form id="dest-form" class="dest-edit">
+                <input id="dest-input" type="text" placeholder="absolute path · ~/Videos/YT" spellcheck="false" />
+                <button type="submit" class="btn btn-ghost">Save</button>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h4 class="settings-group-title">Engine &amp; storage</h4>
+          <div class="panel">
+            <p class="hint" id="env-hint"></p>
+            <div class="engine-strip">
+              <span class="engine-tool" id="engine-ytdlp">yt-dlp <span class="mono" id="ytdlp-ver">—</span></span>
+              <button type="button" class="btn btn-ghost btn-mini" id="update-ytdlp">Update yt-dlp</button>
+              <span class="engine-tool" id="engine-ffmpeg">ffmpeg <span class="mono" id="ffmpeg-ver">—</span></span>
+              <span class="spacer"></span>
+              <span class="engine-tool mono" id="disk-readout"></span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Log modal ===== -->
   <div class="modal-overlay" id="log-modal" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="log-modal-title">
       <div class="modal-head">
