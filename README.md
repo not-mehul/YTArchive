@@ -41,6 +41,15 @@ yt-dlp --version
 ffmpeg -version
 ```
 
+> **Windows: install yt-dlp with pip.** The server prefers running yt-dlp as a
+> module (`python -m yt_dlp`) over the standalone `yt-dlp.exe`, because the
+> frozen Windows binary buffers its progress output and never flushes it —
+> making downloads appear to jump straight from 0% to 100% with no live speed
+> or ETA. `pip install -r requirements.txt` (which now includes `yt-dlp`) into
+> the same environment that runs the server gives you live progress. The
+> Settings → *Engine & storage* panel shows whether the **module** or **binary**
+> is in use.
+
 ## Running
 
 ```sh
