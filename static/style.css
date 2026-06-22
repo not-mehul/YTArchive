@@ -95,6 +95,11 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute must always win. Components below set `display`
+   (flex/grid) which would otherwise override [hidden]'s default display:none
+   and leave modals/panels stuck visible. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
