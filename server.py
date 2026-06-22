@@ -950,21 +950,34 @@ class QueueManager:
 
     # ----- yt-dlp command + parsing ------------------------------------
 
+    # A machine-readable progress line emitted via --progress-template. We use
+    # RAW numeric fields (downloaded/total bytes, speed, eta) rather than yt-dlp's
+    # space-padded human strings, which were the brittle part of an earlier
+    # template attempt. Critically, --progress-template output is routed through
+    # yt-dlp's stdout "screen" channel — the SAME channel as --print, which on
+    # Windows is delivered to our pipe even when the default progress bar (which
+    # goes elsewhere) is not. This is what makes the bar move on Windows instead
+    # of jumping 0%→100% at the end.
+    _PROGRESS_TPL = (
+        "download:[YTPROG] %(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
+        "%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|"
+        "%(progress.status)s|%(info.ext)s"
+    )
+
     def _build_command(self, item: QueueItem) -> list[str]:
         preset = QUALITY_PRESETS[item.quality]
         out_template = str(self._download_dir / "%(uploader)s/%(title)s [%(id)s].%(ext)s")
-        # Use yt-dlp's default, newline-delimited progress output ("[download]
-        # 12.3% of 10.00MiB at 1.20MiB/s ETA 00:07"). It is by far the most
-        # stable line format across versions, and `_PROGRESS_RE` parses it. The
-        # per-pass label (video / audio / thumbnail) comes from the preceding
-        # "[download] Destination: …" line. A custom --progress-template was
-        # tried here but its space-padded fields proved too brittle to parse,
-        # which left the bar stuck at 0% until completion.
+        # Progress arrives two ways and we parse both: yt-dlp's default
+        # "[download] 12.3% of …" line (works on macOS/Linux) AND our
+        # --progress-template "[YTPROG] …" line on stdout (works on Windows,
+        # where the default progress bar does not reach the pipe). Whichever
+        # lands first wins; the template uses robust raw numeric fields.
         cmd: list[str] = [
             "yt-dlp",
             "--newline",
             "--no-colors",
             "--no-playlist",
+            "--progress-template", self._PROGRESS_TPL,
             "-o", out_template,
             "--print", "after_move:filepath:%(filepath)s",
         ]
@@ -1040,6 +1053,58 @@ class QueueManager:
             return "Downloading thumbnail"
         return "Downloading"
 
+    def _phase_for_ext(self, ext: str | None) -> str:
+        if not ext or ext in ("NA", "none"):
+            return "Downloading"
+        e = ext.lower()
+        if not e.startswith("."):
+            e = "." + e
+        if e in self._AUDIO_EXTS:
+            return "Downloading audio"
+        if e in self._VIDEO_EXTS:
+            return "Downloading video"
+        return "Downloading"
+
+    @staticmethod
+    def _tpl_num(v: str) -> float | None:
+        v = (v or "").strip()
+        if not v or v in ("NA", "N/A", "None", "none"):
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            return None
+
+    def _parse_tpl_progress(self, item: QueueItem, line: str) -> None:
+        """Parse our --progress-template line: raw downloaded/total/estimate/
+        speed/eta/status/ext, pipe-separated."""
+        try:
+            payload = line.split("[YTPROG]", 1)[1].strip()
+        except IndexError:
+            return
+        parts = [p.strip() for p in payload.split("|")]
+        if len(parts) < 7:
+            return
+        downloaded = self._tpl_num(parts[0])
+        total = self._tpl_num(parts[1]) or self._tpl_num(parts[2])
+        speed_bps = self._tpl_num(parts[3])
+        eta_s = self._tpl_num(parts[4])
+        status = parts[5]
+        ext = parts[6]
+        with self._lock:
+            if total and downloaded is not None:
+                item.total_bytes = total
+                item.downloaded_bytes = downloaded
+                item.progress = max(0.0, min(100.0, downloaded / total * 100.0))
+            elif downloaded is not None:
+                item.downloaded_bytes = downloaded
+            item.speed_bps = speed_bps
+            item.speed = (_human_bytes(speed_bps) + "/s") if speed_bps else None
+            item.eta = _fmt_eta(eta_s)
+            if status == "finished" and item.total_bytes:
+                item.progress = 100.0
+            item.message = self._phase_for_ext(ext)
+
     def _looks_age_restricted(self, text: str) -> bool:
         t = text.lower()
         return (
@@ -1063,6 +1128,9 @@ class QueueManager:
     def _parse_progress(self, item: QueueItem, line: str) -> None:
         # Strip carriage returns; yt-dlp on Windows emits CRLF.
         line = line.rstrip("\r")
+        if "[YTPROG]" in line:
+            self._parse_tpl_progress(item, line)
+            return
         m = self._PROGRESS_RE.search(line)
         if m:
             with self._lock:
@@ -1176,6 +1244,15 @@ def _human_bytes(n: float | None) -> str:
         f /= 1024
         i += 1
     return f"{f:.1f} {units[i]}" if i else f"{int(f)} {units[i]}"
+
+
+def _fmt_eta(seconds: float | None) -> str | None:
+    if seconds is None or seconds < 0:
+        return None
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
 
 def _disk_free(path: Path) -> int | None:

@@ -198,6 +198,44 @@ class ByteHelperTests(unittest.TestCase):
         self.assertEqual(server._human_bytes(1536), "1.5 KiB")
 
 
+class ProgressTemplateTests(unittest.TestCase):
+    def _item(self, quality="1080p"):
+        return server.QueueItem(id="x", video_id="v", url="u", title="t",
+                                thumbnail=None, duration=None, quality=quality,
+                                sponsorblock=[])
+
+    def test_template_line_drives_progress(self):
+        it = self._item()
+        server.manager._parse_progress(
+            it, "[YTPROG] 5242880|10485760|10485760|1258291.2|4|downloading|mp4")
+        self.assertEqual(it.progress, 50.0)
+        self.assertEqual(it.total_bytes, 10485760.0)
+        self.assertEqual(it.downloaded_bytes, 5242880.0)
+        self.assertAlmostEqual(it.speed_bps, 1258291.2)
+        self.assertEqual(it.eta, "00:04")
+        self.assertEqual(it.message, "Downloading video")
+
+    def test_template_na_fields(self):
+        it = self._item()
+        server.manager._parse_progress(
+            it, "[YTPROG] 1000|NA|NA|NA|NA|downloading|NA")
+        # No total → percent unchanged, but downloaded bytes still tracked.
+        self.assertEqual(it.downloaded_bytes, 1000.0)
+        self.assertIsNone(it.speed)
+        self.assertIsNone(it.eta)
+
+    def test_template_finished_pins_100(self):
+        it = self._item()
+        server.manager._parse_progress(
+            it, "[YTPROG] 100|100|100|0|0|finished|mp4")
+        self.assertEqual(it.progress, 100.0)
+
+    def test_build_command_has_template(self):
+        cmd = server.manager._build_command(self._item())
+        self.assertIn("--progress-template", cmd)
+        self.assertIn("[YTPROG]", cmd[cmd.index("--progress-template") + 1])
+
+
 class BroadcastEvictionTests(unittest.TestCase):
     def test_full_listener_keeps_newest_event(self):
         m = server.manager
