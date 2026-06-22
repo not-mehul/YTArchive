@@ -1,15 +1,19 @@
 // YTArchive frontend bridge client.
 
-const SB_CATEGORIES = [
-  { id: "sponsor",        label: "Sponsor"            },
-  { id: "selfpromo",      label: "Self-promotion"     },
-  { id: "interaction",    label: "Interaction prompt" },
-  { id: "intro",          label: "Intro"              },
-  { id: "outro",          label: "Outro"              },
-  { id: "preview",        label: "Preview / recap"    },
-  { id: "filler",         label: "Filler"             },
-  { id: "music_offtopic", label: "Off-topic music"    },
-];
+// Human labels for SponsorBlock category ids. The set of ids actually rendered
+// is driven by the server (state.sbCategories) so the two can't drift; this map
+// is only the display fallback for ordering/labels.
+const SB_LABELS = {
+  sponsor:        "Sponsor",
+  selfpromo:      "Self-promotion",
+  interaction:    "Interaction prompt",
+  intro:          "Intro",
+  outro:          "Outro",
+  preview:        "Preview / recap",
+  filler:         "Filler",
+  music_offtopic: "Off-topic music",
+};
+const SB_ORDER = Object.keys(SB_LABELS);
 
 const QUALITIES = [
   { id: "4k",    label: "4K"    },
@@ -31,13 +35,22 @@ const INDETERMINATE_MESSAGES = new Set([
 const state = {
   channelUrl: "",
   page: 1,
+  totalPages: null,   // set when a filtered scrape reports it
+  filtered: false,
   ignoreShorts: true,
   videos: [],
   filter: "",
+  sort: "newest",
+  filters: { durationMin: "", durationMax: "", viewsMin: "", viewsMax: "", dateFrom: "", dateTo: "" },
   selected: new Set(),
+  // video_id -> video payload, kept across page navigation so a multi-page
+  // selection survives until it is queued or cleared.
+  selectedVideos: new Map(),
   queuedIds: new Set(),
+  sbCategories: null,
   quality: "1080p",
   sponsorblock: new Set(["sponsor", "selfpromo"]),
+  sbMode: "remove",
   queue: [],
   running: false,
   history: [],
@@ -47,6 +60,10 @@ const state = {
   embedThumbnail: true,
   embedChapters: true,
   useArchive: false,
+  subtitles: false,
+  subtitleLangs: "en",
+  subtitleAuto: false,
+  subtitleEmbed: true,
   cookiesBrowser: "",
   cookiesFile: "",
   cookieBrowsers: [],
@@ -105,6 +122,22 @@ function fmtViews(n) {
   return String(n);
 }
 
+function fmtBytes(n) {
+  if (!n || n <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let i = 0, f = Number(n);
+  while (f >= 1024 && i < units.length - 1) { f /= 1024; i++; }
+  return (i === 0 ? `${Math.round(f)}` : f.toFixed(1)) + " " + units[i];
+}
+
+function fmtClock(seconds) {
+  if (seconds == null || !isFinite(seconds) || seconds < 0) return "—";
+  const s = Math.round(seconds);
+  if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  if (s >= 60) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${s}s`;
+}
+
 let toastTimer = null;
 function toast(msg, kind = "") {
   const existing = $(".toast");
@@ -130,41 +163,80 @@ async function api(path, opts = {}) {
 
 // ---------- config controls ----------
 
+function sbCategoryIds() {
+  // Prefer the authoritative list from the server; fall back to the known
+  // labels (sorted into a stable, human-friendly order) before settings load.
+  const ids = state.sbCategories && state.sbCategories.length
+    ? state.sbCategories
+    : SB_ORDER;
+  return SB_ORDER.filter((id) => ids.includes(id))
+    .concat(ids.filter((id) => !SB_ORDER.includes(id)));
+}
+
 function renderSponsorBlock() {
   const grid = $("#sb-grid");
   grid.innerHTML = "";
-  for (const cat of SB_CATEGORIES) {
-    const id = `sb-${cat.id}`;
+  for (const catId of sbCategoryIds()) {
+    const id = `sb-${catId}`;
     const input = el("input", { type: "checkbox", id });
-    input.checked = state.sponsorblock.has(cat.id);
+    input.checked = state.sponsorblock.has(catId);
     input.addEventListener("change", () => {
-      if (input.checked) state.sponsorblock.add(cat.id);
-      else state.sponsorblock.delete(cat.id);
+      if (input.checked) state.sponsorblock.add(catId);
+      else state.sponsorblock.delete(catId);
       persistChoices();
+      updateConfigSummary();
     });
     const box = el("span", { class: "box" }, [svgEl(`<path d="m5 12 5 5L20 7"/>`, 12)]);
-    grid.appendChild(el("label", { class: "check", for: id }, [input, box, cat.label]));
+    grid.appendChild(el("label", { class: "check", for: id }, [input, box, SB_LABELS[catId] || catId]));
   }
+}
+
+function selectQuality(id) {
+  state.quality = id;
+  renderQuality();
+  updateQualityHint();
+  updateConfigSummary();
+  persistChoices();
+  const active = $("#quality-seg button.active");
+  if (active) active.focus();
 }
 
 function renderQuality() {
   const seg = $("#quality-seg");
   seg.innerHTML = "";
-  for (const q of QUALITIES) {
+  const activeIx = Math.max(0, QUALITIES.findIndex((q) => q.id === state.quality));
+  QUALITIES.forEach((q, ix) => {
+    const isActive = q.id === state.quality;
     const btn = el("button", {
       type: "button",
       role: "radio",
-      "aria-checked": q.id === state.quality ? "true" : "false",
-      class: q.id === state.quality ? "active" : "",
+      "aria-checked": isActive ? "true" : "false",
+      // Roving tabindex: only the checked radio is tab-reachable.
+      tabindex: isActive || (activeIx < 0 && ix === 0) ? "0" : "-1",
+      class: isActive ? "active" : "",
     }, q.label);
-    btn.addEventListener("click", () => {
-      state.quality = q.id;
-      renderQuality();
-      updateQualityHint();
-      persistChoices();
+    btn.addEventListener("click", () => selectQuality(q.id));
+    btn.addEventListener("keydown", (e) => {
+      let delta = 0;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") delta = 1;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") delta = -1;
+      else return;
+      e.preventDefault();
+      const next = (ix + delta + QUALITIES.length) % QUALITIES.length;
+      selectQuality(QUALITIES[next].id);
     });
     seg.appendChild(btn);
-  }
+  });
+}
+
+function updateConfigSummary() {
+  const node = $("#queue-config-summary");
+  if (!node) return;
+  const n = state.sponsorblock.size;
+  const verb = state.sbMode === "mark" ? "mark" : "cut";
+  const sb = n === 0 ? "no SponsorBlock" : `${verb} ${n} SponsorBlock categor${n === 1 ? "y" : "ies"}`;
+  const subs = state.subtitles ? " · subs" : "";
+  node.textContent = `${qualityLabel(state.quality)} · ${sb}${subs}`;
 }
 
 function updateQualityHint() {
@@ -223,13 +295,31 @@ function renderCookiesPanel() {
 
 // ---------- scrape / grid ----------
 
+function filterPayload() {
+  const f = state.filters;
+  return {
+    query: state.filter.trim() || undefined,
+    sort: state.sort,
+    duration_min: f.durationMin || undefined,
+    duration_max: f.durationMax || undefined,
+    views_min: f.viewsMin || undefined,
+    views_max: f.viewsMax || undefined,
+    date_from: f.dateFrom || undefined,
+    date_to: f.dateTo || undefined,
+  };
+}
+
 async function scrape() {
-  const url = $("#channel-url").value.trim();
-  if (!url) { toast("Enter a channel or playlist URL.", "notice"); return; }
-  state.channelUrl = url;
+  const raw = $("#channel-url").value.trim();
+  if (!raw) { toast("Enter a channel URL, @handle, or a name to search.", "notice"); return; }
+  state.channelUrl = raw;
   state.page = 1;
   state.filter = "";
   $("#grid-filter").value = "";
+  // A fresh search starts a fresh selection.
+  state.selected.clear();
+  state.selectedVideos.clear();
+  hideChannelResults();
   await loadPage();
 }
 
@@ -237,6 +327,11 @@ async function loadPage() {
   const btn = $("#scrape-btn");
   btn.disabled = true;
   btn.textContent = "Fetching…";
+  const hint = $("#scrape-hint");
+  const prevHint = hint ? hint.textContent : "";
+  if (hint && (state.page > 1 || state.filtered)) {
+    hint.textContent = "Scanning the channel… filtering the whole channel can take a moment.";
+  }
   try {
     const data = await api("/api/scrape", {
       method: "POST",
@@ -244,10 +339,20 @@ async function loadPage() {
         url: state.channelUrl,
         page: state.page,
         ignore_shorts: state.ignoreShorts,
+        ...filterPayload(),
       }),
     });
+    if (data.needs_search) {
+      await showChannelSearch(data.query);
+      return;
+    }
+    if (data.resolved_url) state.channelUrl = data.resolved_url;
+    // The server may clamp the page (e.g. filtering shrank the result set).
+    if (typeof data.page === "number") state.page = data.page;
     state.videos = data.videos || [];
-    state.selected.clear();
+    state.filtered = !!data.filtered;
+    state.totalPages = data.total_pages != null ? data.total_pages : null;
+    // Selection persists across pages — see queueSelected / state.selectedVideos.
     renderMeta(data);
     renderGrid();
     renderShortsNote(data);
@@ -258,54 +363,69 @@ async function loadPage() {
   } finally {
     btn.disabled = false;
     btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3-3"></path></svg>Fetch`;
+    if (hint) hint.textContent = prevHint;
   }
 }
 
 function renderMeta(data) {
   $("#meta-channel").textContent = data.channel || "—";
-  $("#meta-page").textContent = String(data.page);
+  $("#meta-page").textContent = data.total_pages
+    ? `${data.page} / ${data.total_pages}`
+    : String(data.page);
   $("#meta-count").textContent = String(data.count || 0);
   $("#meta-selected").textContent = String(state.selected.size);
   $("#prev-page").disabled = state.page <= 1;
-  // Page off the raw window size, not the post-filter video count — a page
-  // whose entries are all hidden Shorts still has more pages behind it.
-  const windowSize = data.page_entries != null ? data.page_entries : (data.count || 0);
-  $("#next-page").disabled = windowSize < (data.page_size || 50);
+  if (data.filtered) {
+    $("#next-page").disabled = state.page >= (data.total_pages || 1);
+  } else {
+    // Page off the raw window size, not the post-filter video count — a page
+    // whose entries are all hidden Shorts still has more pages behind it.
+    const windowSize = data.page_entries != null ? data.page_entries : (data.count || 0);
+    $("#next-page").disabled = windowSize < (data.page_size || 50);
+  }
+  const count = $("#filter-count");
+  if (count) {
+    count.textContent = data.filtered
+      ? `${data.total} match${data.total === 1 ? "" : "es"}${data.capped ? " (first 2000)" : ""}`
+      : "";
+  }
 }
 
 function visibleVideos() {
-  const needle = state.filter.trim().toLowerCase();
-  if (!needle) return state.videos;
-  return state.videos.filter((v) => (v.title || "").toLowerCase().includes(needle));
+  // Filtering now happens server-side across the whole channel.
+  return state.videos;
 }
 
 function renderGrid() {
   const grid = $("#video-grid");
   grid.innerHTML = "";
   const items = visibleVideos();
-  const count = $("#filter-count");
-  if (count) {
-    if (state.filter.trim()) {
-      count.textContent = `${items.length} / ${state.videos.length} match`;
-    } else {
-      count.textContent = "";
-    }
-  }
   if (!items.length) {
     $("#grid-empty").hidden = false;
     $("#grid-empty").querySelector("p").textContent =
-      state.videos.length === 0 ? "No videos on this page." : "No matches on this page.";
+      state.filter.trim() || state.filtered ? "No matches in this channel." : "No videos on this page.";
     return;
   }
   $("#grid-empty").hidden = true;
   for (const v of items) {
     const queued = state.queuedIds.has(v.video_id);
+    const selected = state.selected.has(v.video_id);
     const card = el("article", {
-      class: `video-card${state.selected.has(v.video_id) ? " selected" : ""}${queued ? " queued" : ""}`,
+      class: `video-card${selected ? " selected" : ""}${queued ? " queued" : ""}`,
       "data-id": v.video_id,
+      role: "button",
+      tabindex: queued ? "-1" : "0",
+      "aria-pressed": selected ? "true" : "false",
+      "aria-label": `${queued ? "Queued: " : "Select "}${v.title || v.video_id}`,
     });
     if (!queued) {
       card.addEventListener("click", () => toggleSelect(v.video_id));
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleSelect(v.video_id);
+        }
+      });
     }
     const thumb = el("div", { class: "thumb-wrap" });
     if (v.thumbnail) {
@@ -336,18 +456,109 @@ function renderShortsNote(data) {
   const note = $("#shorts-skip-note");
   if (!note) return;
   if (state.ignoreShorts && data.skipped_shorts > 0) {
-    note.textContent = `· ${data.skipped_shorts} short${data.skipped_shorts === 1 ? "" : "s"} hidden on this page`;
+    const scope = data.filtered ? "in this channel" : "on this page";
+    note.textContent = `· ${data.skipped_shorts} short${data.skipped_shorts === 1 ? "" : "s"} hidden ${scope}`;
   } else {
     note.textContent = "";
   }
 }
 
+// ---------- plain-text channel search ----------
+
+function hideChannelResults() {
+  const box = $("#channel-results");
+  if (box) { box.hidden = true; box.innerHTML = ""; }
+}
+
+async function showChannelSearch(query) {
+  const box = $("#channel-results");
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = "";
+  box.appendChild(el("p", { class: "muted channel-results-note" }, `Searching channels for “${query}”…`));
+  try {
+    const data = await api("/api/search", { method: "POST", body: JSON.stringify({ query }) });
+    box.innerHTML = "";
+    const channels = data.channels || [];
+    if (!channels.length) {
+      box.appendChild(el("p", { class: "muted channel-results-note" },
+        "No channels found. Try a more specific name or paste the channel URL."));
+      return;
+    }
+    box.appendChild(el("p", { class: "muted channel-results-note" }, "Pick a channel:"));
+    for (const c of channels) {
+      const btn = el("button", {
+        type: "button",
+        class: "channel-result",
+        onclick: () => {
+          state.channelUrl = c.url;
+          $("#channel-url").value = c.url;
+          hideChannelResults();
+          state.page = 1;
+          loadPage();
+        },
+      }, [
+        el("span", { class: "channel-result-name" }, c.name),
+        el("span", { class: "channel-result-url mono" }, c.url),
+      ]);
+      box.appendChild(btn);
+    }
+  } catch (err) {
+    box.innerHTML = "";
+    box.appendChild(el("p", { class: "muted channel-results-note" }, err.message || "Search failed."));
+  }
+}
+
+// ---------- SponsorBlock mode + subtitles ----------
+
+function renderSbMode() {
+  const seg = $("#sb-mode-seg");
+  if (!seg) return;
+  seg.querySelectorAll("button").forEach((b) => {
+    const on = b.dataset.mode === state.sbMode;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+}
+
+function renderSubtitlesPanel() {
+  const en = $("#subs-enabled");
+  const langs = $("#subs-langs");
+  const auto = $("#subs-auto");
+  const embed = $("#subs-embed");
+  if (en) en.checked = state.subtitles;
+  if (langs && document.activeElement !== langs) langs.value = state.subtitleLangs || "en";
+  if (auto) auto.checked = state.subtitleAuto;
+  if (embed) embed.checked = state.subtitleEmbed;
+}
+
+async function saveSubtitles() {
+  try {
+    await api("/api/settings", { method: "POST", body: JSON.stringify({
+      subtitles: state.subtitles,
+      subtitle_langs: state.subtitleLangs,
+      subtitle_auto: state.subtitleAuto,
+      subtitle_embed: state.subtitleEmbed,
+    }) });
+  } catch (err) { toast(err.message, "error"); }
+}
+
 function toggleSelect(videoId) {
   if (state.queuedIds.has(videoId)) return;
-  if (state.selected.has(videoId)) state.selected.delete(videoId);
-  else state.selected.add(videoId);
+  if (state.selected.has(videoId)) {
+    state.selected.delete(videoId);
+    state.selectedVideos.delete(videoId);
+  } else {
+    state.selected.add(videoId);
+    const v = state.videos.find((x) => x.video_id === videoId);
+    if (v) state.selectedVideos.set(videoId, v);
+  }
   const card = document.querySelector(`.video-card[data-id="${videoId}"]`);
-  if (card) card.classList.toggle("selected", state.selected.has(videoId));
+  if (card) {
+    const on = state.selected.has(videoId);
+    card.classList.toggle("selected", on);
+    card.setAttribute("aria-pressed", on ? "true" : "false");
+  }
   updateSelectedCount();
 }
 
@@ -365,17 +576,53 @@ async function loadSettings() {
   } catch (err) {
     // non-fatal
   }
+  await checkHealth();
+}
+
+async function checkHealth() {
+  const hint = $("#env-hint");
+  if (!hint) return;
   try {
     const h = await api("/api/health");
     const warn = [];
     if (!h.yt_dlp) warn.push("yt-dlp not on PATH");
     if (!h.ffmpeg) warn.push("ffmpeg not on PATH");
-    $("#env-hint").textContent = warn.length
+    hint.textContent = warn.length
       ? `Missing: ${warn.join(" · ")}. Install before queueing downloads.`
       : "yt-dlp and ffmpeg detected on PATH.";
-    if (warn.length) $("#env-hint").style.color = "var(--err-fg)";
+    hint.style.color = warn.length ? "var(--err-fg)" : "";
+    renderEngineStrip(h);
+    renderDisk(h);
   } catch (err) {
     // non-fatal
+  }
+}
+
+function renderEngineStrip(h) {
+  const yv = $("#ytdlp-ver");
+  const fv = $("#ffmpeg-ver");
+  if (yv) yv.textContent = h.yt_dlp ? (h.yt_dlp_version || "ok") : "missing";
+  if (fv) fv.textContent = h.ffmpeg ? (h.ffmpeg_version || "ok") : "missing";
+  const upd = $("#update-ytdlp");
+  if (upd) upd.disabled = !h.yt_dlp;
+}
+
+function renderDisk(h) {
+  const read = $("#disk-readout");
+  if (read) {
+    read.textContent = h.disk_free != null
+      ? `${fmtBytes(h.disk_free)} free${h.disk_total ? " / " + fmtBytes(h.disk_total) : ""}`
+      : "";
+    read.classList.toggle("low", !!h.disk_low);
+  }
+  const banner = $("#disk-banner");
+  if (banner) {
+    if (h.disk_low && h.disk_free != null) {
+      banner.hidden = false;
+      banner.textContent = `Low disk space — only ${fmtBytes(h.disk_free)} free at the destination. Downloads stop below ${fmtBytes(500 * 1024 * 1024)}.`;
+    } else {
+      banner.hidden = true;
+    }
   }
 }
 
@@ -398,12 +645,21 @@ function applySettings(s) {
   if (typeof s.cookies_file === "string") state.cookiesFile = s.cookies_file;
   if (Array.isArray(s.cookie_browsers)) state.cookieBrowsers = s.cookie_browsers;
   if (typeof s.last_quality === "string") state.quality = s.last_quality;
+  if (Array.isArray(s.categories)) state.sbCategories = s.categories;
   if (Array.isArray(s.last_sponsorblock)) {
     state.sponsorblock = new Set(s.last_sponsorblock);
-    renderSponsorBlock();
   }
+  if (typeof s.last_sb_mode === "string") state.sbMode = s.last_sb_mode;
+  if (typeof s.subtitles === "boolean") state.subtitles = s.subtitles;
+  if (typeof s.subtitle_langs === "string") state.subtitleLangs = s.subtitle_langs;
+  if (typeof s.subtitle_auto === "boolean") state.subtitleAuto = s.subtitle_auto;
+  if (typeof s.subtitle_embed === "boolean") state.subtitleEmbed = s.subtitle_embed;
+  renderSponsorBlock();
+  renderSbMode();
+  renderSubtitlesPanel();
   renderQuality();
   updateQualityHint();
+  updateConfigSummary();
   renderAdvancedPanel();
 }
 
@@ -416,6 +672,7 @@ function persistChoices() {
       body: JSON.stringify({
         last_quality: state.quality,
         last_sponsorblock: Array.from(state.sponsorblock),
+        last_sb_mode: state.sbMode,
       }),
     }).catch(() => {});
   }, 300);
@@ -476,15 +733,14 @@ async function saveConcurrency() {
 
 async function queueSelected() {
   if (state.selected.size === 0) return;
-  const videos = state.videos
-    .filter((v) => state.selected.has(v.video_id))
-    .map((v) => ({
-      video_id: v.video_id,
-      url: v.url,
-      title: v.title,
-      thumbnail: v.thumbnail,
-      duration: v.duration,
-    }));
+  // Pull from the cross-page selection map, not just the current page.
+  const videos = Array.from(state.selectedVideos.values()).map((v) => ({
+    video_id: v.video_id,
+    url: v.url,
+    title: v.title,
+    thumbnail: v.thumbnail,
+    duration: v.duration,
+  }));
   try {
     const r = await api("/api/queue/add", {
       method: "POST",
@@ -492,10 +748,12 @@ async function queueSelected() {
         videos,
         quality: state.quality,
         sponsorblock: Array.from(state.sponsorblock),
+        sponsorblock_mode: state.sbMode,
       }),
     });
     for (const it of r.added || []) state.queuedIds.add(it.video_id);
     state.selected.clear();
+    state.selectedVideos.clear();
     renderGrid();
     toast(`Queued ${r.count || 0} item${(r.count || 0) === 1 ? "" : "s"}.`);
   } catch (err) {
@@ -518,6 +776,7 @@ function renderQueue() {
   $("#q-meta").textContent = state.queue.length === 1 ? "item" : "items";
 
   recomputeQueuedIds();
+  renderQueueStats();
 
   list.querySelectorAll(".qitem").forEach((n) => n.remove());
   if (!state.queue.length) {
@@ -526,6 +785,35 @@ function renderQueue() {
   }
   empty.hidden = true;
   for (const it of state.queue) list.appendChild(renderQItem(it));
+}
+
+// Roll the queue up into headline numbers, computed client-side from the
+// per-item byte/speed fields the server attaches to each event.
+function renderQueueStats() {
+  const bar = $("#queue-stats");
+  if (!bar) return;
+  const q = state.queue;
+  if (!q.length) { bar.hidden = true; return; }
+  bar.hidden = false;
+  const active = q.filter((i) => i.status === "downloading");
+  const pending = q.filter((i) => i.status === "pending" || i.status === "paused");
+  const done = q.filter((i) => i.status === "completed");
+  let speed = 0, downloaded = 0, remainingBytes = 0, measurable = false;
+  for (const it of active) {
+    if (it.speed_bps) speed += it.speed_bps;
+    if (it.downloaded_bytes) downloaded += it.downloaded_bytes;
+    if (it.total_bytes && it.downloaded_bytes != null) {
+      remainingBytes += Math.max(0, it.total_bytes - it.downloaded_bytes);
+      measurable = true;
+    }
+  }
+  for (const it of done) if (it.total_bytes) downloaded += it.total_bytes;
+  const eta = (measurable && speed > 0) ? remainingBytes / speed : null;
+  $("#stat-remaining").textContent = String(active.length + pending.length);
+  $("#stat-done").textContent = String(done.length);
+  $("#stat-speed").textContent = speed > 0 ? `${fmtBytes(speed)}/s` : "—";
+  $("#stat-size").textContent = fmtBytes(downloaded);
+  $("#stat-eta").textContent = eta != null ? fmtClock(eta) : "—";
 }
 
 function renderQItem(it) {
@@ -603,6 +891,15 @@ function renderQItem(it) {
       onclick: () => revealItem(it.id),
     }, svgEl(`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>`, 14));
     actions.appendChild(revealBtn);
+  }
+  // Log viewer — available once a download has started (downloading/finished).
+  if (["downloading", "completed", "failed", "cancelled", "paused"].includes(it.status)) {
+    const logBtn = el("button", {
+      type: "button",
+      title: "View log",
+      onclick: () => openLog(it.id, it.title || it.video_id),
+    }, svgEl(`<path d="M4 6h16M4 12h16M4 18h10"/>`, 14));
+    actions.appendChild(logBtn);
   }
   const removeBtn = el("button", {
     type: "button",
@@ -689,6 +986,11 @@ async function pauseQueue() {
 }
 
 async function clearFinished() {
+  const finished = state.queue.filter(
+    (i) => i.status === "completed" || i.status === "failed" || i.status === "cancelled"
+  ).length;
+  if (finished === 0) { toast("Nothing finished to clear.", "notice"); return; }
+  if (!confirm(`Remove ${finished} finished item${finished === 1 ? "" : "s"} from the queue?`)) return;
   try { await api("/api/queue/clear", { method: "POST" }); }
   catch (err) { toast(err.message, "error"); }
 }
@@ -701,20 +1003,36 @@ function setRunning(running) {
 
 // ---------- SSE event stream ----------
 
+function setConn(stateName) {
+  const pill = $("#conn-pill");
+  if (!pill) return;
+  pill.dataset.state = stateName;
+  const label = pill.querySelector(".conn-label");
+  if (label) {
+    label.textContent = stateName === "live" ? "live"
+      : stateName === "reconnecting" ? "reconnecting…" : "connecting…";
+  }
+}
+
 function connectEvents() {
+  setConn("connecting");
   const src = new EventSource("/api/events");
+  src.onopen = () => setConn("live");
   src.onmessage = (ev) => {
     let payload;
     try { payload = JSON.parse(ev.data); } catch { return; }
+    setConn("live");
     handleEvent(payload);
   };
-  src.onerror = () => { /* auto-reconnects */ };
+  // EventSource auto-reconnects; reflect the dropped connection in the meantime.
+  src.onerror = () => { if (src.readyState !== EventSource.OPEN) setConn("reconnecting"); };
 }
 
 function handleEvent(payload) {
   switch (payload.type) {
     case "snapshot": {
       state.queue = payload.items || [];
+      if (typeof payload.running === "boolean") setRunning(payload.running);
       renderQueue();
       renderGrid();
       break;
@@ -741,7 +1059,18 @@ function handleEvent(payload) {
         renderGrid();
       }
       patchQItem(it);
-      if (it.status === "downloading") setRunning(true);
+      renderQueueStats();
+      // Do NOT infer running-state from progress here: an in-flight download
+      // keeps emitting "downloading" events after the user clicks Hold, which
+      // would flip the toggle straight back to running. The authoritative
+      // running state arrives via "state" events and the reconnect snapshot.
+      break;
+    }
+    case "disk": {
+      if (payload.low) {
+        toast("Low disk space at the destination — downloads may stop.", "error");
+        checkHealth();
+      }
       break;
     }
     case "removed": {
@@ -825,6 +1154,60 @@ function patchQItem(it) {
   if (pctEl) pctEl.textContent = `${(it.progress || 0).toFixed(1)}%`;
 }
 
+// ---------- log viewer ----------
+
+async function openLog(id, title) {
+  const modal = $("#log-modal");
+  const body = $("#log-modal-body");
+  const head = $("#log-modal-title");
+  if (!modal || !body) return;
+  head.textContent = `Log · ${title}`;
+  body.textContent = "Loading…";
+  modal.hidden = false;
+  try {
+    const data = await api(`/api/queue/log?id=${encodeURIComponent(id)}`);
+    if (!data.available || !data.lines.length) {
+      body.textContent = data.available ? "(no output captured yet)" : "(log not available — it is kept only for the current session)";
+    } else {
+      body.textContent = data.lines.join("\n");
+      body.scrollTop = body.scrollHeight;
+    }
+  } catch (err) {
+    body.textContent = err.message || "Failed to load log.";
+  }
+}
+
+function closeLog() {
+  const modal = $("#log-modal");
+  if (modal) modal.hidden = true;
+}
+
+// ---------- yt-dlp self-update ----------
+
+async function updateYtdlp() {
+  const btn = $("#update-ytdlp");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Updating…";
+  try {
+    const r = await api("/api/tools/update-ytdlp", { method: "POST" });
+    toast(r.ok ? `yt-dlp: ${r.version || "updated"}` : "yt-dlp update reported an issue — see log.",
+          r.ok ? "" : "notice");
+    if (r.output) {
+      const head = $("#log-modal-title");
+      const body = $("#log-modal-body");
+      if (head && body) { head.textContent = "yt-dlp update"; body.textContent = r.output; $("#log-modal").hidden = false; }
+    }
+    checkHealth();
+  } catch (err) {
+    toast(err.message || "Update failed.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
 // ---------- theme (Dusk ⇄ Dawn) ----------
 
 const THEME_COLORS = { dark: "#0f0d0b", light: "#efe6d8" };
@@ -876,20 +1259,106 @@ function bind() {
   $("#next-page").addEventListener("click", () => { state.page++; loadPage(); });
   $("#select-page").addEventListener("click", () => {
     for (const v of visibleVideos()) {
-      if (!state.queuedIds.has(v.video_id)) state.selected.add(v.video_id);
+      if (!state.queuedIds.has(v.video_id)) {
+        state.selected.add(v.video_id);
+        state.selectedVideos.set(v.video_id, v);
+      }
     }
     renderGrid();
   });
-  $("#clear-selection").addEventListener("click", () => { state.selected.clear(); renderGrid(); });
+  $("#clear-selection").addEventListener("click", () => {
+    state.selected.clear();
+    state.selectedVideos.clear();
+    renderGrid();
+  });
   $("#queue-selected").addEventListener("click", queueSelected);
 
+  // Whole-channel title search (debounced — each change re-scrapes).
+  let filterTimer = null;
   const filterInput = $("#grid-filter");
   if (filterInput) {
     filterInput.addEventListener("input", (e) => {
       state.filter = e.target.value;
-      renderGrid();
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(() => { state.page = 1; loadPage(); }, 350);
     });
   }
+
+  const sortSelect = $("#sort-select");
+  if (sortSelect) sortSelect.addEventListener("change", () => {
+    state.sort = sortSelect.value;
+    state.page = 1;
+    loadPage();
+  });
+
+  const toggleFilters = $("#toggle-filters");
+  if (toggleFilters) toggleFilters.addEventListener("click", () => {
+    const adv = $("#advanced-filters");
+    if (adv) {
+      adv.hidden = !adv.hidden;
+      toggleFilters.classList.toggle("active", !adv.hidden);
+    }
+  });
+
+  const readFilters = () => {
+    state.filters = {
+      durationMin: $("#f-dur-min").value.trim(),
+      durationMax: $("#f-dur-max").value.trim(),
+      viewsMin: $("#f-views-min").value.trim(),
+      viewsMax: $("#f-views-max").value.trim(),
+      dateFrom: $("#f-date-from").value.trim(),
+      dateTo: $("#f-date-to").value.trim(),
+    };
+  };
+  const applyBtn = $("#apply-filters");
+  if (applyBtn) applyBtn.addEventListener("click", () => { readFilters(); state.page = 1; loadPage(); });
+  const resetBtn = $("#reset-filters");
+  if (resetBtn) resetBtn.addEventListener("click", () => {
+    for (const id of ["f-dur-min", "f-dur-max", "f-views-min", "f-views-max", "f-date-from", "f-date-to"]) {
+      const n = document.getElementById(id);
+      if (n) n.value = "";
+    }
+    state.filters = { durationMin: "", durationMax: "", viewsMin: "", viewsMax: "", dateFrom: "", dateTo: "" };
+    state.page = 1;
+    loadPage();
+  });
+
+  // SponsorBlock action mode.
+  const sbModeSeg = $("#sb-mode-seg");
+  if (sbModeSeg) sbModeSeg.querySelectorAll("button").forEach((b) => {
+    b.addEventListener("click", () => {
+      state.sbMode = b.dataset.mode === "mark" ? "mark" : "remove";
+      renderSbMode();
+      updateConfigSummary();
+      persistChoices();
+    });
+  });
+
+  // Subtitles.
+  const subsEnabled = $("#subs-enabled");
+  if (subsEnabled) subsEnabled.addEventListener("change", () => {
+    state.subtitles = subsEnabled.checked;
+    updateConfigSummary();
+    saveSubtitles();
+  });
+  const subsLangs = $("#subs-langs");
+  if (subsLangs) subsLangs.addEventListener("change", () => {
+    state.subtitleLangs = subsLangs.value.trim() || "en";
+    saveSubtitles();
+  });
+  const subsAuto = $("#subs-auto");
+  if (subsAuto) subsAuto.addEventListener("change", () => { state.subtitleAuto = subsAuto.checked; saveSubtitles(); });
+  const subsEmbed = $("#subs-embed");
+  if (subsEmbed) subsEmbed.addEventListener("change", () => { state.subtitleEmbed = subsEmbed.checked; saveSubtitles(); });
+
+  // yt-dlp self-update + log modal.
+  const updBtn = $("#update-ytdlp");
+  if (updBtn) updBtn.addEventListener("click", updateYtdlp);
+  const logClose = $("#log-modal-close");
+  if (logClose) logClose.addEventListener("click", closeLog);
+  const logModal = $("#log-modal");
+  if (logModal) logModal.addEventListener("click", (e) => { if (e.target === logModal) closeLog(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeLog(); });
 
   $("#dest-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -952,12 +1421,19 @@ function bind() {
 function init() {
   initTheme();
   renderSponsorBlock();
+  renderSbMode();
+  renderSubtitlesPanel();
   renderQuality();
   updateQualityHint();
+  updateConfigSummary();
   renderAdvancedPanel();
   bind();
   loadSettings();
   connectEvents();
+  // Re-check the toolchain so installing yt-dlp/ffmpeg mid-session clears the
+  // warning without a manual reload.
+  setInterval(checkHealth, 30000);
+  window.addEventListener("focus", checkHealth);
 }
 
 document.addEventListener("DOMContentLoaded", init);

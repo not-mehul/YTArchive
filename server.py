@@ -19,9 +19,11 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
@@ -44,6 +46,9 @@ SCRAPE_PAGE_SIZE = 50
 
 IS_WINDOWS = os.name == "nt"
 
+# Categories yt-dlp can *remove* via --sponsorblock-remove. `poi_highlight` is a
+# single point-of-interest marker rather than a removable span, so it is
+# deliberately excluded — passing it to --sponsorblock-remove is a no-op.
 SPONSORBLOCK_CATEGORIES = {
     "sponsor",
     "selfpromo",
@@ -53,7 +58,6 @@ SPONSORBLOCK_CATEGORIES = {
     "preview",
     "filler",
     "music_offtopic",
-    "poi_highlight",
 }
 
 QUALITY_PRESETS: dict[str, dict[str, Any]] = {
@@ -91,6 +95,27 @@ QUALITY_PRESETS: dict[str, dict[str, Any]] = {
 
 MAX_CONCURRENCY = 4
 
+# SponsorBlock can either cut segments out (--sponsorblock-remove, the default
+# and primary behaviour) or leave the file intact and label the segments as
+# chapters (--sponsorblock-mark) for skip-aware players.
+SPONSORBLOCK_MODES = ("remove", "mark")
+
+# Sort orders offered for whole-channel browsing. "newest" is the native flat-
+# playlist order for a channel's uploads, so it needs no upload_date.
+SORT_ORDERS = (
+    "newest", "oldest", "longest", "shortest", "most_viewed", "least_viewed",
+)
+
+# Cap on how many entries we pull when filtering/sorting across a whole channel.
+SCRAPE_ALL_CAP = 2000
+
+# Disk-space thresholds for the download destination.
+DISK_HARD_MIN = 500 * 1024 * 1024      # refuse to start a download below this
+DISK_SOFT_WARN = 2 * 1024 * 1024 * 1024  # surface a UI warning below this
+
+# Per-item rolling log capacity (lines). Session-only; never persisted.
+LOG_MAX_LINES = 600
+
 # yt-dlp supports cookies via --cookies-from-browser. Whitelist the values it
 # accepts so the UI can offer a closed dropdown rather than free text.
 COOKIE_BROWSERS = (
@@ -114,12 +139,18 @@ class QueueItem:
     duration: int | None
     quality: str
     sponsorblock: list[str]
+    sponsorblock_mode: str = "remove"  # remove | mark
     status: str = "pending"  # pending | downloading | paused | completed | failed | cancelled
     progress: float = 0.0
     speed: str | None = None
     eta: str | None = None
     message: str | None = None
     output_file: str | None = None
+    # Numeric byte/rate tracking for aggregate queue stats. Parsed from the
+    # yt-dlp progress line; None until the first measurable update.
+    total_bytes: float | None = None
+    downloaded_bytes: float | None = None
+    speed_bps: float | None = None
     added_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -181,11 +212,18 @@ class QueueManager:
         self._embed_thumbnail: bool = True
         self._embed_chapters: bool = True
         self._use_archive: bool = False
+        self._subtitles: bool = False
+        self._subtitle_langs: str = "en"
+        self._subtitle_auto: bool = False
+        self._subtitle_embed: bool = True
         self._cookies_browser: str = ""
         self._cookies_file: str = ""
         self._history: list[str] = []
         self._last_quality: str = "1080p"
         self._last_sponsorblock: list[str] = ["sponsor", "selfpromo"]
+        self._last_sb_mode: str = "remove"
+        # Session-only per-item yt-dlp output, for the log viewer. Never persisted.
+        self._logs: dict[str, deque[str]] = {}
         self._persist_dirty = False
         self._load_persisted()
         self._dispatcher = threading.Thread(target=self._dispatch_loop, daemon=True)
@@ -213,6 +251,12 @@ class QueueManager:
         self._embed_thumbnail = bool(data.get("embed_thumbnail", True))
         self._embed_chapters = bool(data.get("embed_chapters", True))
         self._use_archive = bool(data.get("use_archive", False))
+        self._subtitles = bool(data.get("subtitles", False))
+        sl = data.get("subtitle_langs")
+        if isinstance(sl, str) and sl.strip():
+            self._subtitle_langs = sl.strip()
+        self._subtitle_auto = bool(data.get("subtitle_auto", False))
+        self._subtitle_embed = bool(data.get("subtitle_embed", True))
         cb = data.get("cookies_browser")
         if isinstance(cb, str) and cb in COOKIE_BROWSERS:
             self._cookies_browser = cb
@@ -228,6 +272,9 @@ class QueueManager:
         lsb = data.get("last_sponsorblock")
         if isinstance(lsb, list):
             self._last_sponsorblock = [c for c in lsb if c in SPONSORBLOCK_CATEGORIES]
+        lsm = data.get("last_sb_mode")
+        if isinstance(lsm, str) and lsm in SPONSORBLOCK_MODES:
+            self._last_sb_mode = lsm
         items = data.get("queue") or []
         if isinstance(items, list):
             for raw in items:
@@ -243,12 +290,16 @@ class QueueManager:
                         duration=raw.get("duration"),
                         quality=str(raw.get("quality") or self._last_quality),
                         sponsorblock=[c for c in (raw.get("sponsorblock") or []) if c in SPONSORBLOCK_CATEGORIES],
+                        sponsorblock_mode=(raw.get("sponsorblock_mode") if raw.get("sponsorblock_mode") in SPONSORBLOCK_MODES else "remove"),
                         status=str(raw.get("status") or "pending"),
                         progress=float(raw.get("progress") or 0.0),
                         speed=raw.get("speed"),
                         eta=raw.get("eta"),
                         message=raw.get("message"),
                         output_file=raw.get("output_file"),
+                        total_bytes=raw.get("total_bytes"),
+                        downloaded_bytes=raw.get("downloaded_bytes"),
+                        speed_bps=raw.get("speed_bps"),
                         added_at=float(raw.get("added_at") or time.time()),
                         started_at=raw.get("started_at"),
                         finished_at=raw.get("finished_at"),
@@ -261,6 +312,7 @@ class QueueManager:
                     item.progress = 0.0
                     item.speed = None
                     item.eta = None
+                    item.speed_bps = None
                     item.message = "Restored — will resume"
                 self._items[item.id] = item
                 self._order.append(item.id)
@@ -275,11 +327,16 @@ class QueueManager:
                 "embed_thumbnail": self._embed_thumbnail,
                 "embed_chapters": self._embed_chapters,
                 "use_archive": self._use_archive,
+                "subtitles": self._subtitles,
+                "subtitle_langs": self._subtitle_langs,
+                "subtitle_auto": self._subtitle_auto,
+                "subtitle_embed": self._subtitle_embed,
                 "cookies_browser": self._cookies_browser,
                 "cookies_file": self._cookies_file,
                 "history": list(self._history),
                 "last_quality": self._last_quality,
                 "last_sponsorblock": list(self._last_sponsorblock),
+                "last_sb_mode": self._last_sb_mode,
                 "queue": [asdict(self._items[i]) for i in self._order],
             }
 
@@ -342,6 +399,22 @@ class QueueManager:
         self._broadcast({"type": "settings", "use_archive": bool(enabled)})
         self._persist()
 
+    def set_subtitles(self, enabled: bool, langs: str | None, auto: bool, embed: bool) -> None:
+        with self._lock:
+            self._subtitles = bool(enabled)
+            if langs is not None and langs.strip():
+                self._subtitle_langs = langs.strip()
+            self._subtitle_auto = bool(auto)
+            self._subtitle_embed = bool(embed)
+            snap = {
+                "subtitles": self._subtitles,
+                "subtitle_langs": self._subtitle_langs,
+                "subtitle_auto": self._subtitle_auto,
+                "subtitle_embed": self._subtitle_embed,
+            }
+        self._broadcast({"type": "settings", **snap})
+        self._persist()
+
     def push_history(self, url: str) -> None:
         url = (url or "").strip()
         if not url:
@@ -352,7 +425,12 @@ class QueueManager:
         self._broadcast({"type": "settings", "history": list(self._history)})
         self._persist()
 
-    def remember_choices(self, quality: str | None, sponsorblock: list[str] | None) -> None:
+    def remember_choices(
+        self,
+        quality: str | None,
+        sponsorblock: list[str] | None,
+        sb_mode: str | None = None,
+    ) -> None:
         changed = False
         with self._lock:
             if quality and quality in QUALITY_PRESETS and quality != self._last_quality:
@@ -363,6 +441,9 @@ class QueueManager:
                 if clean != sorted(self._last_sponsorblock):
                     self._last_sponsorblock = clean
                     changed = True
+            if sb_mode in SPONSORBLOCK_MODES and sb_mode != self._last_sb_mode:
+                self._last_sb_mode = sb_mode
+                changed = True
         if changed:
             self._persist()
 
@@ -381,12 +462,18 @@ class QueueManager:
                 "embed_thumbnail": self._embed_thumbnail,
                 "embed_chapters": self._embed_chapters,
                 "use_archive": self._use_archive,
+                "subtitles": self._subtitles,
+                "subtitle_langs": self._subtitle_langs,
+                "subtitle_auto": self._subtitle_auto,
+                "subtitle_embed": self._subtitle_embed,
                 "cookies_browser": self._cookies_browser,
                 "cookies_file": self._cookies_file,
                 "cookie_browsers": list(COOKIE_BROWSERS),
                 "history": list(self._history),
                 "last_quality": self._last_quality,
                 "last_sponsorblock": list(self._last_sponsorblock),
+                "last_sb_mode": self._last_sb_mode,
+                "sb_modes": list(SPONSORBLOCK_MODES),
             }
 
     # ----- queue mutation ---------------------------------------------
@@ -396,16 +483,22 @@ class QueueManager:
         videos: list[dict[str, Any]],
         quality: str,
         sponsorblock: list[str],
+        sb_mode: str = "remove",
     ) -> list[QueueItem]:
         if quality not in QUALITY_PRESETS:
             raise ValueError(f"unknown quality preset: {quality}")
         clean_sb = [c for c in sponsorblock if c in SPONSORBLOCK_CATEGORIES]
+        sb_mode = sb_mode if sb_mode in SPONSORBLOCK_MODES else "remove"
         added: list[QueueItem] = []
         with self._lock:
+            # Dedup against any non-completed item already in the queue. A
+            # previously failed/cancelled video should be re-run via Retry
+            # rather than spawning a duplicate row; completed items may be
+            # re-queued for a fresh download.
             existing_video_ids = {
                 self._items[i].video_id
                 for i in self._order
-                if self._items[i].status in {"pending", "downloading", "paused"}
+                if self._items[i].status != "completed"
             }
             for v in videos:
                 vid = v.get("video_id") or v.get("id")
@@ -420,6 +513,7 @@ class QueueManager:
                     duration=v.get("duration"),
                     quality=quality,
                     sponsorblock=clean_sb,
+                    sponsorblock_mode=sb_mode,
                 )
                 self._items[item.id] = item
                 self._order.append(item.id)
@@ -428,7 +522,7 @@ class QueueManager:
         for item in added:
             self._broadcast({"type": "queued", "item": asdict(item)})
         if added:
-            self.remember_choices(quality, clean_sb)
+            self.remember_choices(quality, clean_sb, sb_mode)
             self._persist()
             self._wake.set()
         return added
@@ -443,6 +537,7 @@ class QueueManager:
             if item_id in self._order:
                 self._order.remove(item_id)
             self._items.pop(item_id, None)
+            self._logs.pop(item_id, None)
         self._broadcast({"type": "removed", "id": item_id})
         self._persist()
         return True
@@ -458,9 +553,11 @@ class QueueManager:
             item.progress = 0.0
             item.speed = None
             item.eta = None
+            item.speed_bps = None
             item.message = None
             item.started_at = None
             item.finished_at = None
+            self._logs.pop(item_id, None)
             snap = asdict(item)
         self._broadcast({"type": "update", "item": snap})
         self._persist()
@@ -475,6 +572,7 @@ class QueueManager:
                 it = self._items[iid]
                 if it.status in {"completed", "failed", "cancelled"}:
                     self._items.pop(iid, None)
+                    self._logs.pop(iid, None)
                     removed += 1
                 else:
                     keep.append(iid)
@@ -530,9 +628,12 @@ class QueueManager:
                 return False
             item.status = "pending"
             item.message = "Resuming"
-            item.progress = 0.0
+            # Keep the last known percent so the bar holds its place until
+            # yt-dlp emits a real progress line off the .part file, instead of
+            # snapping back to 0%. The stale speed/eta are cleared.
             item.speed = None
             item.eta = None
+            item.finished_at = None
             snap = asdict(item)
         self._broadcast({"type": "update", "item": snap})
         self._persist()
@@ -542,6 +643,61 @@ class QueueManager:
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return [asdict(self._items[i]) for i in self._order]
+
+    # ----- per-item logs ----------------------------------------------
+
+    def _log_line(self, item_id: str, line: str) -> None:
+        with self._lock:
+            buf = self._logs.get(item_id)
+            if buf is None:
+                buf = deque(maxlen=LOG_MAX_LINES)
+                self._logs[item_id] = buf
+            buf.append(line)
+
+    def get_log(self, item_id: str) -> list[str] | None:
+        with self._lock:
+            buf = self._logs.get(item_id)
+            return list(buf) if buf is not None else None
+
+    # ----- aggregate stats --------------------------------------------
+
+    def stats(self) -> dict[str, Any]:
+        """Roll up the queue into headline numbers for the UI."""
+        with self._lock:
+            items = [self._items[i] for i in self._order]
+        active = [it for it in items if it.status == "downloading"]
+        pending = [it for it in items if it.status in {"pending", "paused"}]
+        completed = [it for it in items if it.status == "completed"]
+        failed = [it for it in items if it.status in {"failed", "cancelled"}]
+        speed_bps = sum(it.speed_bps for it in active if it.speed_bps)
+        # Bytes pulled this session: finished sizes plus in-flight progress.
+        downloaded = 0.0
+        for it in completed:
+            if it.total_bytes:
+                downloaded += it.total_bytes
+        for it in active:
+            if it.downloaded_bytes:
+                downloaded += it.downloaded_bytes
+        # Remaining bytes we can actually estimate (active items with a size).
+        remaining_bytes = 0.0
+        measurable = False
+        for it in active:
+            if it.total_bytes and it.downloaded_bytes is not None:
+                remaining_bytes += max(0.0, it.total_bytes - it.downloaded_bytes)
+                measurable = True
+        eta_seconds: float | None = None
+        if measurable and speed_bps > 0:
+            eta_seconds = remaining_bytes / speed_bps
+        return {
+            "active": len(active),
+            "pending": len(pending),
+            "completed": len(completed),
+            "failed": len(failed),
+            "remaining": len(active) + len(pending),
+            "speed_bps": speed_bps,
+            "downloaded_bytes": downloaded,
+            "eta_seconds": eta_seconds,
+        }
 
     def start(self) -> None:
         with self._lock:
@@ -579,7 +735,17 @@ class QueueManager:
             try:
                 q.put_nowait(data)
             except queue.Full:
-                pass
+                # The listener is draining slower than we produce (a backgrounded
+                # tab, a slow machine). Evict the OLDEST queued event and retry so
+                # the newest event survives — crucially the terminal status
+                # updates (completed/failed/cancelled), which would otherwise be
+                # lost and leave a row stuck mid-download. Progress events are
+                # throttled and newest-wins, so dropping an older one is harmless.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(data)
+                except (queue.Empty, queue.Full):
+                    pass
 
     # ----- dispatcher + workers ----------------------------------------
 
@@ -615,12 +781,33 @@ class QueueManager:
                     break
 
     def _process(self, item: QueueItem) -> None:
+        # Refuse to start if the destination is critically low on space — a
+        # failed write halfway through is worse than not starting.
+        free = _disk_free(self._download_dir)
+        if free is not None and free < DISK_HARD_MIN:
+            with self._lock:
+                self._dispatched.discard(item.id)
+            self._broadcast({"type": "disk", "free_bytes": free, "low": True})
+            self._finish(item, "failed",
+                         f"Insufficient disk space ({_human_bytes(free)} free)")
+            self._wake.set()
+            return
+
         with self._lock:
             item.status = "downloading"
             item.started_at = time.time()
+            self._logs[item.id] = deque(maxlen=LOG_MAX_LINES)
         self._broadcast({"type": "update", "item": asdict(item)})
 
         cmd = self._build_command(item)
+        self._log_line(item.id, "$ " + " ".join(cmd))
+        # Force yt-dlp's own stdout to stay unbuffered. yt-dlp is a Python
+        # program, and Python block-buffers stdout when it is a pipe rather than
+        # a TTY — progress lines then pile up and surface as a single 0%→100%
+        # jump at the very end instead of streaming. PYTHONUNBUFFERED guarantees
+        # line-by-line output. (This is the buffering half of a symptom whose
+        # other half was a progress-line parsing bug; see _build_command.)
+        child_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         popen_kwargs: dict[str, Any] = dict(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -628,6 +815,7 @@ class QueueManager:
             bufsize=1,
             encoding="utf-8",
             errors="replace",
+            env=child_env,
         )
         if IS_WINDOWS:
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -649,10 +837,14 @@ class QueueManager:
         last_emit = 0.0
         last_progress = -1.0
         last_message: str | None = None
+        archived = False
         assert proc.stdout is not None
         try:
             for raw in proc.stdout:
                 line = raw.rstrip("\n")
+                self._log_line(item.id, line)
+                if "has already been recorded in the archive" in line:
+                    archived = True
                 self._parse_progress(item, line)
                 now = time.time()
                 changed = item.progress != last_progress or item.message != last_message
@@ -674,6 +866,8 @@ class QueueManager:
             self._pausing.discard(item.id)
         if paused:
             self._finish(item, "paused", "Paused — partial file kept for resume")
+        elif rc == 0 and archived and not item.output_file:
+            self._finish(item, "completed", "Skipped — already in archive")
         elif rc == 0:
             self._finish(item, "completed", "Saved")
         elif rc < 0 or (IS_WINDOWS and rc in (3221225786, -1073741510)):
@@ -688,8 +882,19 @@ class QueueManager:
             item.status = status
             item.message = message
             item.finished_at = time.time()
+            item.speed = None
+            item.eta = None
+            item.speed_bps = None
             if status == "completed":
                 item.progress = 100.0
+                # Prefer the real file size for archived-size accounting.
+                if item.output_file:
+                    try:
+                        item.total_bytes = float(os.path.getsize(item.output_file))
+                    except OSError:
+                        pass
+                if item.total_bytes:
+                    item.downloaded_bytes = item.total_bytes
         self._broadcast({"type": "update", "item": asdict(item)})
         self._persist()
 
@@ -726,12 +931,31 @@ class QueueManager:
                 if "merge_output_format" in preset:
                     cmd += ["--merge-output-format", preset["merge_output_format"]]
             if item.sponsorblock:
-                cmd += ["--sponsorblock-remove", ",".join(item.sponsorblock)]
+                # Remove (cut the segments out) is the primary behaviour; mark
+                # leaves the file intact and labels segments as chapters.
+                if item.sponsorblock_mode == "mark":
+                    cmd += ["--sponsorblock-mark", ",".join(item.sponsorblock)]
+                else:
+                    cmd += ["--sponsorblock-remove", ",".join(item.sponsorblock)]
+            # Subtitles (video presets only — can't embed into a bare audio file).
+            # When segments are *removed*, embedding keeps captions in sync
+            # because yt-dlp's ModifyChapters postprocessor cuts the embedded
+            # subtitle streams along with audio/video. Sidecar .srt files are
+            # NOT re-timed, so embed is the default and the synced choice.
+            if self._subtitles and not audio_only:
+                langs = self._subtitle_langs.strip() or "en"
+                cmd += ["--sub-langs", langs, "--write-subs"]
+                if self._subtitle_auto:
+                    cmd += ["--write-auto-subs"]
+                if self._subtitle_embed:
+                    cmd += ["--embed-subs"]
             if self._embed_metadata:
                 cmd += ["--embed-metadata"]
             if self._embed_thumbnail:
                 cmd += ["--embed-thumbnail"]
-            if self._embed_chapters and not audio_only:
+            # Chapters help skip-aware players, and are required for SponsorBlock
+            # "mark" mode to be visible — enable them implicitly when marking.
+            if (self._embed_chapters or item.sponsorblock_mode == "mark") and not audio_only:
                 cmd += ["--embed-chapters"]
             if self._use_archive:
                 archive_path = self._download_dir / "archive.txt"
@@ -795,6 +1019,13 @@ class QueueManager:
                 item.progress = float(m.group("pct"))
                 item.speed = self._clean_tpl_value(m.group("speed"))
                 item.eta = self._clean_tpl_value(m.group("eta"))
+                # Numeric byte tracking for aggregate stats.
+                size = _parse_size_str(m.group("size"))
+                if size:
+                    item.total_bytes = size
+                item.speed_bps = _parse_speed_str(item.speed)
+                if item.total_bytes is not None:
+                    item.downloaded_bytes = item.total_bytes * (item.progress / 100.0)
                 # Preserve "Downloading video / audio / thumbnail" phase set
                 # by the most recent Destination line.
                 if not (item.message or "").startswith("Downloading"):
@@ -851,6 +1082,94 @@ class QueueManager:
                 item.message = "Age-restricted — add cookies under Configuration → Cookies"
 
 
+# ---------------------------------------------------------------------------
+# Byte / size / disk helpers
+# ---------------------------------------------------------------------------
+
+_SIZE_UNITS = {
+    "b": 1, "kib": 1024, "mib": 1024**2, "gib": 1024**3, "tib": 1024**4,
+    "kb": 1000, "mb": 1000**2, "gb": 1000**3, "tb": 1000**4,
+    "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4,
+}
+_SIZE_RE = re.compile(r"^\s*([\d.]+)\s*([a-zA-Z]+)?\s*$")
+
+
+def _parse_size_str(s: str | None) -> float | None:
+    """'10.00MiB' -> bytes. Returns None for missing/unparseable values."""
+    if not s:
+        return None
+    m = _SIZE_RE.match(s)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+    except ValueError:
+        return None
+    unit = (m.group(2) or "b").lower().rstrip("/s")
+    return val * _SIZE_UNITS.get(unit, 1)
+
+
+def _parse_speed_str(s: str | None) -> float | None:
+    """'1.20MiB/s' -> bytes per second."""
+    if not s:
+        return None
+    return _parse_size_str(s.rstrip("/s").strip()) if s else None
+
+
+def _human_bytes(n: float | None) -> str:
+    if not n or n <= 0:
+        return "0 B"
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    i = 0
+    f = float(n)
+    while f >= 1024 and i < len(units) - 1:
+        f /= 1024
+        i += 1
+    return f"{f:.1f} {units[i]}" if i else f"{int(f)} {units[i]}"
+
+
+def _disk_free(path: Path) -> int | None:
+    """Free bytes on the filesystem holding `path` (or its nearest parent)."""
+    p = path
+    for _ in range(6):
+        try:
+            return shutil.disk_usage(str(p)).free
+        except (FileNotFoundError, NotADirectoryError):
+            p = p.parent
+        except OSError:
+            return None
+    return None
+
+
+TERMINATE_GRACE = 10  # seconds to wait after SIGTERM before SIGKILL
+
+
+def _force_kill(proc: subprocess.Popen) -> None:
+    if IS_WINDOWS:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _escalate_after_grace(proc: subprocess.Popen) -> None:
+    # A yt-dlp/ffmpeg child that ignores SIGTERM would otherwise leave the
+    # worker thread blocked on proc.wait() forever, permanently consuming a
+    # concurrency slot. Escalate to SIGKILL once the grace period lapses.
+    try:
+        proc.wait(timeout=TERMINATE_GRACE)
+    except subprocess.TimeoutExpired:
+        _force_kill(proc)
+
+
 def _terminate_proc(proc: subprocess.Popen) -> bool:
     if proc.poll() is not None:
         return False
@@ -863,13 +1182,13 @@ def _terminate_proc(proc: subprocess.Popen) -> bool:
                 os.killpg(pgid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 proc.terminate()
-        return True
     except (OSError, ValueError):
         try:
             proc.terminate()
-            return True
         except Exception:
             return False
+    threading.Thread(target=_escalate_after_grace, args=(proc,), daemon=True).start()
+    return True
 
 
 manager = QueueManager()
@@ -916,105 +1235,284 @@ def _thumbnail_for(video_id: str, hinted: str | None) -> str | None:
     return None
 
 
-SHORTS_DURATION_CUTOFF = 60  # seconds; canonical YouTube Shorts limit
+def _is_short(entry_url: str | None) -> bool:
+    # The `/shorts/` URL path is the only reliable signal. A duration-based
+    # heuristic was tried here but hid legitimate short uploads (clips, teasers,
+    # trailers) — plenty of real videos run under a minute, and the Shorts
+    # length ceiling has since risen to three minutes, so duration tells us
+    # nothing useful. Shorts come through flat-playlist with `/shorts/` URLs.
+    return bool(entry_url and "/shorts/" in entry_url)
 
 
-def _is_short(entry_url: str | None, duration: Any) -> bool:
-    if entry_url and "/shorts/" in entry_url:
-        return True
-    try:
-        if duration is not None and float(duration) > 0 and float(duration) <= SHORTS_DURATION_CUTOFF:
-            return True
-    except (TypeError, ValueError):
-        pass
-    return False
+def _entry_to_video(entry: dict[str, Any]) -> dict[str, Any] | None:
+    vid = entry.get("id")
+    if not vid:
+        return None
+    entry_url = entry.get("url") or f"https://www.youtube.com/watch?v={vid}"
+    thumb = None
+    thumbs = entry.get("thumbnails") or []
+    if isinstance(thumbs, list) and thumbs:
+        thumb = thumbs[-1].get("url")
+    elif entry.get("thumbnail"):
+        thumb = entry["thumbnail"]
+    return {
+        "video_id": vid,
+        "url": entry_url,
+        "title": entry.get("title") or vid,
+        "thumbnail": _thumbnail_for(vid, thumb),
+        "duration": entry.get("duration"),
+        "upload_date": entry.get("upload_date"),
+        "view_count": entry.get("view_count"),
+        "channel": entry.get("channel") or entry.get("uploader"),
+    }
 
 
-def scrape_channel(url: str, start: int, end: int, ignore_shorts: bool = True) -> dict[str, Any]:
-    """Return a page of videos from a channel/playlist URL.
+def _norm_date(s: str | None) -> str | None:
+    """Normalise 'YYYY-MM-DD' or 'YYYYMMDD' to the compact 'YYYYMMDD' form."""
+    if not s:
+        return None
+    digits = re.sub(r"\D", "", s)
+    return digits[:8] if len(digits) >= 8 else None
 
-    yt-dlp's --flat-playlist + --dump-json gives one JSON object per entry on
-    stdout. We use --playlist-items to grab just the slice we need.
+
+def _passes_filters(v: dict[str, Any], f: dict[str, Any]) -> bool:
+    """Apply optional filters. A missing field on the entry passes that filter —
+    flat-playlist often omits view_count / upload_date, and an archival tool
+    should not silently hide videos it merely lacks metadata for."""
+    q = f.get("query")
+    if q and q.lower() not in (v.get("title") or "").lower():
+        return False
+    dur = v.get("duration")
+    if dur is not None:
+        if f.get("duration_min") is not None and dur < f["duration_min"]:
+            return False
+        if f.get("duration_max") is not None and dur > f["duration_max"]:
+            return False
+    views = v.get("view_count")
+    if views is not None:
+        if f.get("views_min") is not None and views < f["views_min"]:
+            return False
+        if f.get("views_max") is not None and views > f["views_max"]:
+            return False
+    ud = v.get("upload_date")
+    if ud:
+        if f.get("date_from") and ud < f["date_from"]:
+            return False
+        if f.get("date_to") and ud > f["date_to"]:
+            return False
+    return True
+
+
+def _sort_videos(videos: list[dict[str, Any]], sort: str) -> list[dict[str, Any]]:
+    # The incoming order is the channel's native newest-first flat order.
+    if sort == "newest":
+        return videos
+    if sort == "oldest":
+        return list(reversed(videos))
+    if sort == "longest":
+        return sorted(videos, key=lambda v: (v.get("duration") or -1), reverse=True)
+    if sort == "shortest":
+        return sorted(videos, key=lambda v: (v.get("duration") if v.get("duration") is not None else 1e18))
+    if sort == "most_viewed":
+        return sorted(videos, key=lambda v: (v.get("view_count") or -1), reverse=True)
+    if sort == "least_viewed":
+        return sorted(videos, key=lambda v: (v.get("view_count") if v.get("view_count") is not None else 1e18))
+    return videos
+
+
+def _filters_active(f: dict[str, Any], sort: str) -> bool:
+    keys = ("query", "duration_min", "duration_max", "views_min", "views_max", "date_from", "date_to")
+    return any(f.get(k) not in (None, "") for k in keys) or (sort and sort != "newest")
+
+
+# Per-URL cache of parsed flat-playlist entries. Because yt-dlp can only walk a
+# channel's continuation tokens from the top (see below), every page fetch is a
+# "1:end" scrape — so the deepest fetch already contains every shallower page.
+# Caching it makes back-navigation, Shorts-toggling, and re-renders instant
+# instead of re-running yt-dlp each time.
+_SCRAPE_CACHE: dict[str, dict[str, Any]] = {}
+_SCRAPE_CACHE_LOCK = threading.Lock()
+_SCRAPE_CACHE_TTL = 300  # seconds
+
+
+def _fetch_entries(url: str, end: int) -> list[dict[str, Any]]:
+    """Return parsed flat-playlist entries for `url`, covering items 1..end.
+
+    Served from the per-URL cache when a fresh, deep-enough scrape already
+    exists; otherwise yt-dlp is run for `1:end` and the result is cached.
     """
-    if shutil.which("yt-dlp") is None:
-        raise RuntimeError("yt-dlp is not installed or not on PATH")
+    now = time.time()
+    with _SCRAPE_CACHE_LOCK:
+        cached = _SCRAPE_CACHE.get(url)
+        if cached and cached["end"] >= end and (now - cached["ts"]) < _SCRAPE_CACHE_TTL:
+            return cached["entries"]
     # For channel URLs yt-dlp's --playlist-items "51:100" often returns nothing
     # because it never walks the continuation tokens past the first batch. Ask
     # for 1:end and slice client-side — yt-dlp keeps paginating until it hits
     # the upper bound, which is what we actually want.
-    items_arg = f"1:{end}"
     cmd = [
         "yt-dlp",
         "--flat-playlist",
         "--dump-json",
         "--no-warnings",
         "--ignore-no-formats-error",
-        "--playlist-items", items_arg,
+        "--playlist-items", f"1:{end}",
         url,
     ]
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=False)
     if proc.returncode != 0 and not proc.stdout.strip():
         msg = (proc.stderr or "").strip().splitlines()[-1] if proc.stderr else "scrape failed"
         raise RuntimeError(msg)
-    raw_lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
-    # Drop everything before this page's window so we don't re-emit page 1.
-    raw_lines = raw_lines[start - 1:end]
-    # Entries actually present in this window, before Shorts filtering. The UI
-    # uses this (not the post-filter video count) to decide whether a further
-    # page exists — otherwise a window full of hidden Shorts looks like the end.
-    page_entries = len(raw_lines)
-    videos: list[dict[str, Any]] = []
-    channel: str | None = None
-    skipped_shorts = 0
-    for line in raw_lines:
+    entries: list[dict[str, Any]] = []
+    for ln in proc.stdout.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
         try:
-            entry = json.loads(line)
+            entries.append(json.loads(ln))
         except json.JSONDecodeError:
             continue
-        vid = entry.get("id")
-        if not vid:
-            continue
-        entry_url = entry.get("url") or f"https://www.youtube.com/watch?v={vid}"
-        duration = entry.get("duration")
-        if ignore_shorts and _is_short(entry_url, duration):
-            skipped_shorts += 1
+    with _SCRAPE_CACHE_LOCK:
+        _SCRAPE_CACHE[url] = {"entries": entries, "end": end, "ts": now}
+    return entries
+
+
+def scrape_channel(
+    url: str,
+    page: int,
+    page_size: int,
+    ignore_shorts: bool = True,
+    filters: dict[str, Any] | None = None,
+    sort: str = "newest",
+) -> dict[str, Any]:
+    """Return a page of videos from a channel/playlist URL.
+
+    Without filters/sort this pages a sliding window of the channel (fast).
+    When any filter or a non-default sort is active it pulls the whole channel
+    (capped) and paginates the filtered+sorted result, so search/sort apply
+    across the entire channel rather than just the current page.
+    """
+    if shutil.which("yt-dlp") is None:
+        raise RuntimeError("yt-dlp is not installed or not on PATH")
+    filters = filters or {}
+    sort = sort if sort in SORT_ORDERS else "newest"
+
+    if not _filters_active(filters, sort):
+        start = (page - 1) * page_size + 1
+        end = page * page_size
+        entries = _fetch_entries(url, end)
+        # Drop everything before this page's window so we don't re-emit page 1.
+        window = entries[start - 1:end]
+        # Entries present in this window before Shorts filtering. The UI uses
+        # this (not the post-filter count) to decide whether a further page
+        # exists — a window full of hidden Shorts still has pages behind it.
+        page_entries = len(window)
+        videos: list[dict[str, Any]] = []
+        channel: str | None = None
+        skipped_shorts = 0
+        for entry in window:
+            v = _entry_to_video(entry)
+            if v is None:
+                continue
             if not channel:
-                channel = entry.get("channel") or entry.get("uploader")
+                channel = v.get("channel")
+            if ignore_shorts and _is_short(v["url"]):
+                skipped_shorts += 1
+                continue
+            videos.append(v)
+        return {
+            "channel": channel, "videos": videos, "page": page,
+            "page_size": page_size, "count": len(videos),
+            "page_entries": page_entries, "skipped_shorts": skipped_shorts,
+            "ignore_shorts": ignore_shorts, "filtered": False,
+        }
+
+    # Filtered/sorted: scan the whole (capped) channel.
+    entries = _fetch_entries(url, SCRAPE_ALL_CAP)
+    channel = None
+    skipped_shorts = 0
+    matched: list[dict[str, Any]] = []
+    for entry in entries:
+        v = _entry_to_video(entry)
+        if v is None:
             continue
-        thumb = None
-        thumbs = entry.get("thumbnails") or []
-        if isinstance(thumbs, list) and thumbs:
-            thumb = thumbs[-1].get("url")
-        elif entry.get("thumbnail"):
-            thumb = entry["thumbnail"]
-        videos.append({
-            "video_id": vid,
-            "url": entry_url,
-            "title": entry.get("title") or vid,
-            "thumbnail": _thumbnail_for(vid, thumb),
-            "duration": duration,
-            "upload_date": entry.get("upload_date"),
-            "view_count": entry.get("view_count"),
-            "channel": entry.get("channel") or entry.get("uploader"),
-        })
         if not channel:
-            channel = entry.get("channel") or entry.get("uploader")
+            channel = v.get("channel")
+        if ignore_shorts and _is_short(v["url"]):
+            skipped_shorts += 1
+            continue
+        if _passes_filters(v, filters):
+            matched.append(v)
+    matched = _sort_videos(matched, sort)
+    total = len(matched)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
     return {
-        "channel": channel,
-        "videos": videos,
-        "start": start,
-        "end": end,
-        "count": len(videos),
-        "page_entries": page_entries,
-        "skipped_shorts": skipped_shorts,
-        "ignore_shorts": ignore_shorts,
+        "channel": channel, "videos": matched[start:start + page_size],
+        "page": page, "page_size": page_size, "count": len(matched[start:start + page_size]),
+        "total": total, "total_pages": total_pages, "scanned": len(entries),
+        "capped": len(entries) >= SCRAPE_ALL_CAP, "skipped_shorts": skipped_shorts,
+        "ignore_shorts": ignore_shorts, "filtered": True,
     }
+
+
+def validate_source(text: str) -> tuple[str, str]:
+    """Classify the search box input. Returns (kind, value) where kind is
+    'url' (value is a normalised URL) or 'query' (value is a search string).
+    Raises ValueError for input that is clearly neither usable."""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Enter a channel URL, @handle, or a name to search")
+    # @handle shorthand → canonical YouTube channel URL.
+    if text.startswith("@") and " " not in text:
+        return "url", f"https://www.youtube.com/{text}"
+    parsed = urlparse(text if "://" in text else "https://" + text)
+    looks_like_host = "." in (parsed.netloc or "") and " " not in text
+    if "://" in text or looks_like_host:
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Unsupported URL scheme: {parsed.scheme or 'none'}")
+        if not parsed.netloc:
+            raise ValueError("That does not look like a valid URL")
+        normalised = text if "://" in text else "https://" + text
+        return "url", normalised
+    # Plain text → search query.
+    return "query", text
+
+
+def search_channels(query: str, limit: int = 6) -> list[dict[str, Any]]:
+    """Find candidate channels by plain-text name via a small video search,
+    deduped by channel. yt-dlp has no dedicated channel-search, so we mine the
+    channel fields off a `ytsearch` of videos."""
+    if shutil.which("yt-dlp") is None:
+        raise RuntimeError("yt-dlp is not installed or not on PATH")
+    cmd = [
+        "yt-dlp", "--flat-playlist", "--dump-json", "--no-warnings",
+        "--ignore-no-formats-error",
+        f"ytsearch{max(limit * 4, 12)}:{query}",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+    if proc.returncode != 0 and not proc.stdout.strip():
+        msg = (proc.stderr or "").strip().splitlines()[-1] if proc.stderr else "search failed"
+        raise RuntimeError(msg)
+    seen: dict[str, dict[str, Any]] = {}
+    for ln in proc.stdout.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            e = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        name = e.get("channel") or e.get("uploader")
+        curl = e.get("channel_url") or e.get("uploader_url")
+        cid = e.get("channel_id") or curl or name
+        if not name or not curl or cid in seen:
+            continue
+        seen[cid] = {"name": name, "url": curl, "channel_id": e.get("channel_id")}
+        if len(seen) >= limit:
+            break
+    return list(seen.values())
 
 
 # ---------------------------------------------------------------------------
@@ -1029,37 +1527,119 @@ def index() -> Response:
     return send_from_directory(STATIC_DIR, "index.html")
 
 
+def _tool_version(name: str) -> str | None:
+    if shutil.which(name) is None:
+        return None
+    try:
+        out = subprocess.run([name, "--version"], capture_output=True, text=True, timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().splitlines()[0]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 @app.route("/api/health")
 def health() -> Response:
+    dl_dir = manager.download_dir
+    free = _disk_free(dl_dir)
+    total = None
+    try:
+        total = shutil.disk_usage(str(dl_dir)).total
+    except OSError:
+        pass
     return jsonify({
         "ok": True,
         "yt_dlp": shutil.which("yt-dlp") is not None,
         "ffmpeg": shutil.which("ffmpeg") is not None,
-        "download_dir": str(manager.download_dir),
+        "yt_dlp_version": _tool_version("yt-dlp"),
+        "ffmpeg_version": (_tool_version("ffmpeg") or "").replace("ffmpeg version ", "")[:24] or None,
+        "download_dir": str(dl_dir),
+        "disk_free": free,
+        "disk_total": total,
+        "disk_low": free is not None and free < DISK_SOFT_WARN,
     })
+
+
+def _parse_int(data: dict[str, Any], key: str) -> int | None:
+    val = data.get(key)
+    if val in (None, ""):
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+@app.route("/api/search", methods=["POST"])
+def api_search() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    query = (data.get("query") or "").strip()
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+    try:
+        channels = search_channels(query)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"channels": channels})
 
 
 @app.route("/api/scrape", methods=["POST"])
 def api_scrape() -> Response:
     data = request.get_json(force=True, silent=True) or {}
-    url = (data.get("url") or "").strip()
+    raw = (data.get("url") or "").strip()
     page = int(data.get("page", 1))
     ignore_shorts = bool(data.get("ignore_shorts", True))
-    if not url:
+    sort = data.get("sort") or "newest"
+    if not raw:
         return jsonify({"error": "url is required"}), 400
+    # Validate before firing a long-running yt-dlp subprocess.
+    try:
+        kind, value = validate_source(raw)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if kind == "query":
+        # Plain text — tell the client to disambiguate via channel search.
+        return jsonify({"needs_search": True, "query": value})
+    url = value
     if page < 1:
         page = 1
-    start = (page - 1) * SCRAPE_PAGE_SIZE + 1
-    end = page * SCRAPE_PAGE_SIZE
+    filters = {
+        "query": (data.get("query") or "").strip() or None,
+        "duration_min": _parse_int(data, "duration_min"),
+        "duration_max": _parse_int(data, "duration_max"),
+        "views_min": _parse_int(data, "views_min"),
+        "views_max": _parse_int(data, "views_max"),
+        "date_from": _norm_date(data.get("date_from")),
+        "date_to": _norm_date(data.get("date_to")),
+    }
     try:
-        result = scrape_channel(url, start, end, ignore_shorts=ignore_shorts)
+        result = scrape_channel(url, page, SCRAPE_PAGE_SIZE, ignore_shorts=ignore_shorts,
+                                filters=filters, sort=sort)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    result["page"] = page
-    result["page_size"] = SCRAPE_PAGE_SIZE
+    result["resolved_url"] = url
     if page == 1:
         manager.push_history(url)
     return jsonify(result)
+
+
+@app.route("/api/tools/update-ytdlp", methods=["POST"])
+def api_update_ytdlp() -> Response:
+    if shutil.which("yt-dlp") is None:
+        return jsonify({"error": "yt-dlp is not on PATH"}), 400
+    try:
+        proc = subprocess.run(["yt-dlp", "-U"], capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "yt-dlp update timed out"}), 504
+    except OSError as exc:
+        return jsonify({"error": str(exc)}), 500
+    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return jsonify({
+        "ok": proc.returncode == 0,
+        "output": output[-2000:],
+        "version": _tool_version("yt-dlp"),
+    })
 
 
 @app.route("/api/queue", methods=["GET"])
@@ -1077,13 +1657,25 @@ def api_queue_add() -> Response:
     videos = data.get("videos") or []
     quality = data.get("quality") or "1080p"
     sponsorblock = data.get("sponsorblock") or []
+    sb_mode = data.get("sponsorblock_mode") or "remove"
     if not isinstance(videos, list) or not videos:
         return jsonify({"error": "videos must be a non-empty list"}), 400
     try:
-        added = manager.add(videos, quality, sponsorblock)
+        added = manager.add(videos, quality, sponsorblock, sb_mode=sb_mode)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"added": [asdict(i) for i in added], "count": len(added)})
+
+
+@app.route("/api/queue/log", methods=["GET"])
+def api_queue_log() -> Response:
+    item_id = request.args.get("id")
+    if not item_id:
+        return jsonify({"error": "id is required"}), 400
+    log = manager.get_log(item_id)
+    if log is None:
+        return jsonify({"lines": [], "available": False})
+    return jsonify({"lines": log, "available": True})
 
 
 @app.route("/api/queue/remove", methods=["POST"])
@@ -1199,18 +1791,28 @@ def api_settings() -> Response:
             )
         if "use_archive" in data:
             manager.set_use_archive(bool(data["use_archive"]))
+        if any(k in data for k in ("subtitles", "subtitle_langs", "subtitle_auto", "subtitle_embed")):
+            cur = manager.settings()
+            manager.set_subtitles(
+                enabled=bool(data.get("subtitles", cur["subtitles"])),
+                langs=data.get("subtitle_langs") if "subtitle_langs" in data else None,
+                auto=bool(data.get("subtitle_auto", cur["subtitle_auto"])),
+                embed=bool(data.get("subtitle_embed", cur["subtitle_embed"])),
+            )
         if "cookies_browser" in data or "cookies_file" in data:
             manager.set_cookies(
                 browser=data.get("cookies_browser") if "cookies_browser" in data else None,
                 file=data.get("cookies_file") if "cookies_file" in data else None,
             )
-        if "last_quality" in data or "last_sponsorblock" in data:
+        if any(k in data for k in ("last_quality", "last_sponsorblock", "last_sb_mode")):
             manager.remember_choices(
                 data.get("last_quality"),
                 data.get("last_sponsorblock") if isinstance(data.get("last_sponsorblock"), list) else None,
+                data.get("last_sb_mode"),
             )
     settings = manager.settings()
     settings["categories"] = sorted(SPONSORBLOCK_CATEGORIES)
+    settings["sort_orders"] = list(SORT_ORDERS)
     settings["qualities"] = {
         key: {"label": preset["label"], "audio_only": preset.get("audio_only", False)}
         for key, preset in QUALITY_PRESETS.items()
@@ -1223,7 +1825,11 @@ def api_events() -> Response:
     listener = manager.listen()
 
     def stream():
-        snapshot = json.dumps({"type": "snapshot", "items": manager.snapshot()})
+        snapshot = json.dumps({
+            "type": "snapshot",
+            "items": manager.snapshot(),
+            "running": manager.is_running(),
+        })
         yield f"data: {snapshot}\n\n".encode("utf-8")
         try:
             while True:

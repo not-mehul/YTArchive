@@ -60,16 +60,27 @@ YTARCHIVE_HOST=127.0.0.1 YTARCHIVE_PORT=8765 python3 server.py
 
 ## Using it
 
-1. Paste a channel URL (e.g. `https://www.youtube.com/@channel`) or any
-   playlist URL and hit **Fetch**. Videos are pulled in pages of 50.
-2. Click thumbnails to mark videos for queueing. Walk pages with the
-   arrow buttons.
-3. In **Configuration**, tick the SponsorBlock segments you want cut
-   and pick a quality preset.
-4. Set a **Destination** folder (defaults to `./downloads`).
+1. In **Source**, paste a channel/playlist URL, an `@handle`, or just type
+   a channel **name** to search and pick from the results. Hit **Fetch**.
+   Videos are pulled in pages of 50.
+2. Click thumbnails to mark videos for queueing — selection persists as you
+   walk pages with the arrows. Use the filter/sort bar to **search titles,
+   filter by duration/views/date, and sort across the whole channel**.
+3. In **Configuration**, choose SponsorBlock segments and whether to
+   **Remove** them (cut, the default) or **Mark as chapters**; pick a quality
+   preset; optionally enable **Subtitles** (embedded captions stay in sync
+   with SponsorBlock cuts).
+4. Set a **Destination** folder (defaults to `./downloads`). The engine strip
+   shows yt-dlp/ffmpeg versions and free disk, with an **Update yt-dlp** button.
 5. Hit **Queue selected**, then **Start** in the Queue section.
-6. Watch the progress bars. Downloads run one at a time so the box
-   doesn't melt.
+6. Watch live progress and the **aggregate stats** (remaining, speed, archived
+   size, ETA). Each row has a **log** button to inspect the full yt-dlp output;
+   failed items can be diagnosed without re-running in a terminal.
+
+> **Beyond YouTube.** This started as a YouTube channel archiver and is being
+> generalised into a broader archival tool (podcasts, music, …). The bridge
+> already drives `yt-dlp`, which supports many sources; source-specific
+> features (SponsorBlock, Shorts) are scoped to YouTube.
 
 ## How it works
 
@@ -84,13 +95,24 @@ something.
 Each queued item becomes a `yt-dlp` subprocess with:
 
 - `-f <format>` mapped from the quality preset
-- `--sponsorblock-remove <categories>` if any are selected
+- `--sponsorblock-remove <categories>` (cut) or `--sponsorblock-mark`
+  (label as chapters) when categories are selected
+- `--write-subs`/`--embed-subs` (with `--sub-langs`) when subtitles are on —
+  embedding keeps captions aligned when segments are cut
 - `--merge-output-format mp4` for video presets, `--extract-audio` for
   audio presets
 - `-o '<dir>/%(uploader)s/%(title)s [%(id)s].%(ext)s'`
 
-`stdout` is parsed line-by-line; progress percent, speed, and ETA are
-broadcast to the UI over Server-Sent Events at `/api/events`.
+`stdout` is parsed line-by-line; progress percent, speed, ETA and byte
+counts are broadcast to the UI over Server-Sent Events at `/api/events`,
+and retained per item for the in-app log viewer. A live connection pill,
+disk-space guard, and aggregate queue stats round out the monitoring.
+
+### Tests
+`python3 -m unittest discover -s tests` — offline unit tests (yt-dlp is
+mocked) covering the Shorts heuristic, progress parsing, scrape pagination
+and whole-channel filter/sort, command building (SponsorBlock modes,
+subtitles), source validation, and the byte helpers.
 
 ### SponsorBlock categories
 | Key              | Meaning                       |
