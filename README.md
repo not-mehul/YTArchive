@@ -111,10 +111,20 @@ Each queued item becomes a `yt-dlp` subprocess with:
   audio presets
 - `-o '<dir>/%(uploader)s/%(title)s [%(id)s].%(ext)s'`
 
-`stdout` is parsed line-by-line; progress percent, speed, ETA and byte
-counts are broadcast to the UI over Server-Sent Events at `/api/events`,
-and retained per item for the in-app log viewer. A live connection pill,
-disk-space guard, and aggregate queue stats round out the monitoring.
+When the `yt_dlp` module is importable, downloads run through
+`ytdlp_runner.py`, which drives yt-dlp via its Python API and emits progress
+from a `progress_hooks` callback with an explicit `flush()`. This is the only
+thing that streams progress reliably on Windows, where yt-dlp buffers its own
+stdout and the bar would otherwise jump straight to 100%. (Without the module,
+it falls back to the `yt-dlp` binary + `--progress-template`.) Progress
+percent, speed, ETA and byte counts are broadcast to the UI over Server-Sent
+Events at `/api/events`, and retained per item for the in-app log viewer.
+
+The server runs under **waitress** when available, which serves concurrent
+requests reliably while the SSE stream is open (the Flask dev server can drop
+a request mid-download); it falls back to the dev server otherwise. A live
+connection pill, disk-space guard, and aggregate queue stats round out the
+monitoring.
 
 ### Tests
 `python3 -m unittest discover -s tests` — offline unit tests (yt-dlp is

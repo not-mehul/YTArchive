@@ -34,6 +34,9 @@ def main() -> int:
 
     parsed = yt_dlp.parse_options(sys.argv[1:])
     opts = dict(parsed.ydl_opts)
+    # The progress hook below is our single source of progress; suppress
+    # yt-dlp's own progress line so it doesn't also spam the captured log.
+    opts["noprogress"] = True
 
     def progress_hook(d: dict) -> None:
         info = d.get("info_dict") or {}

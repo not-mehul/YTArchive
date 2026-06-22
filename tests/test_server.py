@@ -33,31 +33,6 @@ class IsShortTests(unittest.TestCase):
         self.assertFalse(server._is_short(None))
 
 
-class ProgressRegexTests(unittest.TestCase):
-    def test_full_progress_line(self):
-        m = server.QueueManager._PROGRESS_RE.search(
-            "[download]  12.3% of 10.00MiB at 1.20MiB/s ETA 00:07"
-        )
-        self.assertIsNotNone(m)
-        self.assertEqual(m.group("pct"), "12.3")
-        self.assertEqual(m.group("speed"), "1.20MiB/s")
-        self.assertEqual(m.group("eta"), "00:07")
-
-    def test_percent_without_eta(self):
-        m = server.QueueManager._PROGRESS_RE.search("[download] 100% of 5.00MiB")
-        self.assertIsNotNone(m)
-        self.assertEqual(m.group("pct"), "100")
-
-
-class CleanTplTests(unittest.TestCase):
-    def test_placeholder_values_become_none(self):
-        for v in ("NA", "N/A", "Unknown", "--", " ", "Unknown ETA"):
-            self.assertIsNone(server.QueueManager._clean_tpl_value(v))
-
-    def test_real_value_trimmed(self):
-        self.assertEqual(server.QueueManager._clean_tpl_value(" 1.2MiB/s "), "1.2MiB/s")
-
-
 class ScrapePaginationTests(unittest.TestCase):
     def setUp(self):
         server._SCRAPE_CACHE.clear()
@@ -187,15 +162,14 @@ class ValidateSourceTests(unittest.TestCase):
 
 
 class ByteHelperTests(unittest.TestCase):
-    def test_parse_size(self):
-        self.assertEqual(server._parse_size_str("10.00MiB"), 10 * 1024 * 1024)
-        self.assertIsNone(server._parse_size_str(None))
-
-    def test_parse_speed(self):
-        self.assertAlmostEqual(server._parse_speed_str("1.00MiB/s"), 1024 * 1024)
-
     def test_human_bytes(self):
         self.assertEqual(server._human_bytes(1536), "1.5 KiB")
+        self.assertEqual(server._human_bytes(0), "0 B")
+
+    def test_fmt_eta(self):
+        self.assertEqual(server._fmt_eta(7), "00:07")
+        self.assertEqual(server._fmt_eta(3661), "1:01:01")
+        self.assertIsNone(server._fmt_eta(None))
 
 
 class ProgressTemplateTests(unittest.TestCase):

@@ -1,4 +1,9 @@
 Flask>=3.0.0
-# Installing yt-dlp here lets the server run it as `python -m yt_dlp`, which
-# streams download progress reliably (the standalone Windows binary buffers it).
+# Installing yt-dlp here lets the server run it through its Python API
+# (ytdlp_runner.py), which streams download progress reliably — the standalone
+# Windows binary buffers it and the bar appears to jump straight to 100%.
 yt-dlp>=2024.1.0
+# A production-grade WSGI server. Serves concurrent requests reliably while a
+# long-lived SSE stream is open; the Flask dev server can drop a request
+# mid-download (seen as a "NetworkError" when opening a row's log).
+waitress>=3.0.0
