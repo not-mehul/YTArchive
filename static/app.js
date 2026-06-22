@@ -1,15 +1,19 @@
 // YTArchive frontend bridge client.
 
-const SB_CATEGORIES = [
-  { id: "sponsor",        label: "Sponsor"            },
-  { id: "selfpromo",      label: "Self-promotion"     },
-  { id: "interaction",    label: "Interaction prompt" },
-  { id: "intro",          label: "Intro"              },
-  { id: "outro",          label: "Outro"              },
-  { id: "preview",        label: "Preview / recap"    },
-  { id: "filler",         label: "Filler"             },
-  { id: "music_offtopic", label: "Off-topic music"    },
-];
+// Human labels for SponsorBlock category ids. The set of ids actually rendered
+// is driven by the server (state.sbCategories) so the two can't drift; this map
+// is only the display fallback for ordering/labels.
+const SB_LABELS = {
+  sponsor:        "Sponsor",
+  selfpromo:      "Self-promotion",
+  interaction:    "Interaction prompt",
+  intro:          "Intro",
+  outro:          "Outro",
+  preview:        "Preview / recap",
+  filler:         "Filler",
+  music_offtopic: "Off-topic music",
+};
+const SB_ORDER = Object.keys(SB_LABELS);
 
 const QUALITIES = [
   { id: "4k",    label: "4K"    },
@@ -35,7 +39,11 @@ const state = {
   videos: [],
   filter: "",
   selected: new Set(),
+  // video_id -> video payload, kept across page navigation so a multi-page
+  // selection survives until it is queued or cleared.
+  selectedVideos: new Map(),
   queuedIds: new Set(),
+  sbCategories: null,
   quality: "1080p",
   sponsorblock: new Set(["sponsor", "selfpromo"]),
   queue: [],
@@ -130,41 +138,78 @@ async function api(path, opts = {}) {
 
 // ---------- config controls ----------
 
+function sbCategoryIds() {
+  // Prefer the authoritative list from the server; fall back to the known
+  // labels (sorted into a stable, human-friendly order) before settings load.
+  const ids = state.sbCategories && state.sbCategories.length
+    ? state.sbCategories
+    : SB_ORDER;
+  return SB_ORDER.filter((id) => ids.includes(id))
+    .concat(ids.filter((id) => !SB_ORDER.includes(id)));
+}
+
 function renderSponsorBlock() {
   const grid = $("#sb-grid");
   grid.innerHTML = "";
-  for (const cat of SB_CATEGORIES) {
-    const id = `sb-${cat.id}`;
+  for (const catId of sbCategoryIds()) {
+    const id = `sb-${catId}`;
     const input = el("input", { type: "checkbox", id });
-    input.checked = state.sponsorblock.has(cat.id);
+    input.checked = state.sponsorblock.has(catId);
     input.addEventListener("change", () => {
-      if (input.checked) state.sponsorblock.add(cat.id);
-      else state.sponsorblock.delete(cat.id);
+      if (input.checked) state.sponsorblock.add(catId);
+      else state.sponsorblock.delete(catId);
       persistChoices();
+      updateConfigSummary();
     });
     const box = el("span", { class: "box" }, [svgEl(`<path d="m5 12 5 5L20 7"/>`, 12)]);
-    grid.appendChild(el("label", { class: "check", for: id }, [input, box, cat.label]));
+    grid.appendChild(el("label", { class: "check", for: id }, [input, box, SB_LABELS[catId] || catId]));
   }
+}
+
+function selectQuality(id) {
+  state.quality = id;
+  renderQuality();
+  updateQualityHint();
+  updateConfigSummary();
+  persistChoices();
+  const active = $("#quality-seg button.active");
+  if (active) active.focus();
 }
 
 function renderQuality() {
   const seg = $("#quality-seg");
   seg.innerHTML = "";
-  for (const q of QUALITIES) {
+  const activeIx = Math.max(0, QUALITIES.findIndex((q) => q.id === state.quality));
+  QUALITIES.forEach((q, ix) => {
+    const isActive = q.id === state.quality;
     const btn = el("button", {
       type: "button",
       role: "radio",
-      "aria-checked": q.id === state.quality ? "true" : "false",
-      class: q.id === state.quality ? "active" : "",
+      "aria-checked": isActive ? "true" : "false",
+      // Roving tabindex: only the checked radio is tab-reachable.
+      tabindex: isActive || (activeIx < 0 && ix === 0) ? "0" : "-1",
+      class: isActive ? "active" : "",
     }, q.label);
-    btn.addEventListener("click", () => {
-      state.quality = q.id;
-      renderQuality();
-      updateQualityHint();
-      persistChoices();
+    btn.addEventListener("click", () => selectQuality(q.id));
+    btn.addEventListener("keydown", (e) => {
+      let delta = 0;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") delta = 1;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") delta = -1;
+      else return;
+      e.preventDefault();
+      const next = (ix + delta + QUALITIES.length) % QUALITIES.length;
+      selectQuality(QUALITIES[next].id);
     });
     seg.appendChild(btn);
-  }
+  });
+}
+
+function updateConfigSummary() {
+  const node = $("#queue-config-summary");
+  if (!node) return;
+  const n = state.sponsorblock.size;
+  const sb = n === 0 ? "no SponsorBlock cuts" : `cut ${n} SponsorBlock categor${n === 1 ? "y" : "ies"}`;
+  node.textContent = `${qualityLabel(state.quality)} · ${sb}`;
 }
 
 function updateQualityHint() {
@@ -230,6 +275,9 @@ async function scrape() {
   state.page = 1;
   state.filter = "";
   $("#grid-filter").value = "";
+  // A fresh search starts a fresh selection.
+  state.selected.clear();
+  state.selectedVideos.clear();
   await loadPage();
 }
 
@@ -237,6 +285,11 @@ async function loadPage() {
   const btn = $("#scrape-btn");
   btn.disabled = true;
   btn.textContent = "Fetching…";
+  const hint = $("#scrape-hint");
+  const prevHint = hint ? hint.textContent : "";
+  if (hint && state.page > 1) {
+    hint.textContent = "Scanning the channel… deep pages can take a moment on large channels.";
+  }
   try {
     const data = await api("/api/scrape", {
       method: "POST",
@@ -247,7 +300,7 @@ async function loadPage() {
       }),
     });
     state.videos = data.videos || [];
-    state.selected.clear();
+    // Selection persists across pages — see queueSelected / state.selectedVideos.
     renderMeta(data);
     renderGrid();
     renderShortsNote(data);
@@ -258,6 +311,7 @@ async function loadPage() {
   } finally {
     btn.disabled = false;
     btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3-3"></path></svg>Fetch`;
+    if (hint && state.page > 1) hint.textContent = prevHint;
   }
 }
 
@@ -300,12 +354,23 @@ function renderGrid() {
   $("#grid-empty").hidden = true;
   for (const v of items) {
     const queued = state.queuedIds.has(v.video_id);
+    const selected = state.selected.has(v.video_id);
     const card = el("article", {
-      class: `video-card${state.selected.has(v.video_id) ? " selected" : ""}${queued ? " queued" : ""}`,
+      class: `video-card${selected ? " selected" : ""}${queued ? " queued" : ""}`,
       "data-id": v.video_id,
+      role: "button",
+      tabindex: queued ? "-1" : "0",
+      "aria-pressed": selected ? "true" : "false",
+      "aria-label": `${queued ? "Queued: " : "Select "}${v.title || v.video_id}`,
     });
     if (!queued) {
       card.addEventListener("click", () => toggleSelect(v.video_id));
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleSelect(v.video_id);
+        }
+      });
     }
     const thumb = el("div", { class: "thumb-wrap" });
     if (v.thumbnail) {
@@ -344,10 +409,20 @@ function renderShortsNote(data) {
 
 function toggleSelect(videoId) {
   if (state.queuedIds.has(videoId)) return;
-  if (state.selected.has(videoId)) state.selected.delete(videoId);
-  else state.selected.add(videoId);
+  if (state.selected.has(videoId)) {
+    state.selected.delete(videoId);
+    state.selectedVideos.delete(videoId);
+  } else {
+    state.selected.add(videoId);
+    const v = state.videos.find((x) => x.video_id === videoId);
+    if (v) state.selectedVideos.set(videoId, v);
+  }
   const card = document.querySelector(`.video-card[data-id="${videoId}"]`);
-  if (card) card.classList.toggle("selected", state.selected.has(videoId));
+  if (card) {
+    const on = state.selected.has(videoId);
+    card.classList.toggle("selected", on);
+    card.setAttribute("aria-pressed", on ? "true" : "false");
+  }
   updateSelectedCount();
 }
 
@@ -365,15 +440,21 @@ async function loadSettings() {
   } catch (err) {
     // non-fatal
   }
+  await checkHealth();
+}
+
+async function checkHealth() {
+  const hint = $("#env-hint");
+  if (!hint) return;
   try {
     const h = await api("/api/health");
     const warn = [];
     if (!h.yt_dlp) warn.push("yt-dlp not on PATH");
     if (!h.ffmpeg) warn.push("ffmpeg not on PATH");
-    $("#env-hint").textContent = warn.length
+    hint.textContent = warn.length
       ? `Missing: ${warn.join(" · ")}. Install before queueing downloads.`
       : "yt-dlp and ffmpeg detected on PATH.";
-    if (warn.length) $("#env-hint").style.color = "var(--err-fg)";
+    hint.style.color = warn.length ? "var(--err-fg)" : "";
   } catch (err) {
     // non-fatal
   }
@@ -398,12 +479,14 @@ function applySettings(s) {
   if (typeof s.cookies_file === "string") state.cookiesFile = s.cookies_file;
   if (Array.isArray(s.cookie_browsers)) state.cookieBrowsers = s.cookie_browsers;
   if (typeof s.last_quality === "string") state.quality = s.last_quality;
+  if (Array.isArray(s.categories)) state.sbCategories = s.categories;
   if (Array.isArray(s.last_sponsorblock)) {
     state.sponsorblock = new Set(s.last_sponsorblock);
-    renderSponsorBlock();
   }
+  renderSponsorBlock();
   renderQuality();
   updateQualityHint();
+  updateConfigSummary();
   renderAdvancedPanel();
 }
 
@@ -476,15 +559,14 @@ async function saveConcurrency() {
 
 async function queueSelected() {
   if (state.selected.size === 0) return;
-  const videos = state.videos
-    .filter((v) => state.selected.has(v.video_id))
-    .map((v) => ({
-      video_id: v.video_id,
-      url: v.url,
-      title: v.title,
-      thumbnail: v.thumbnail,
-      duration: v.duration,
-    }));
+  // Pull from the cross-page selection map, not just the current page.
+  const videos = Array.from(state.selectedVideos.values()).map((v) => ({
+    video_id: v.video_id,
+    url: v.url,
+    title: v.title,
+    thumbnail: v.thumbnail,
+    duration: v.duration,
+  }));
   try {
     const r = await api("/api/queue/add", {
       method: "POST",
@@ -496,6 +578,7 @@ async function queueSelected() {
     });
     for (const it of r.added || []) state.queuedIds.add(it.video_id);
     state.selected.clear();
+    state.selectedVideos.clear();
     renderGrid();
     toast(`Queued ${r.count || 0} item${(r.count || 0) === 1 ? "" : "s"}.`);
   } catch (err) {
@@ -689,6 +772,11 @@ async function pauseQueue() {
 }
 
 async function clearFinished() {
+  const finished = state.queue.filter(
+    (i) => i.status === "completed" || i.status === "failed" || i.status === "cancelled"
+  ).length;
+  if (finished === 0) { toast("Nothing finished to clear.", "notice"); return; }
+  if (!confirm(`Remove ${finished} finished item${finished === 1 ? "" : "s"} from the queue?`)) return;
   try { await api("/api/queue/clear", { method: "POST" }); }
   catch (err) { toast(err.message, "error"); }
 }
@@ -715,6 +803,7 @@ function handleEvent(payload) {
   switch (payload.type) {
     case "snapshot": {
       state.queue = payload.items || [];
+      if (typeof payload.running === "boolean") setRunning(payload.running);
       renderQueue();
       renderGrid();
       break;
@@ -876,11 +965,18 @@ function bind() {
   $("#next-page").addEventListener("click", () => { state.page++; loadPage(); });
   $("#select-page").addEventListener("click", () => {
     for (const v of visibleVideos()) {
-      if (!state.queuedIds.has(v.video_id)) state.selected.add(v.video_id);
+      if (!state.queuedIds.has(v.video_id)) {
+        state.selected.add(v.video_id);
+        state.selectedVideos.set(v.video_id, v);
+      }
     }
     renderGrid();
   });
-  $("#clear-selection").addEventListener("click", () => { state.selected.clear(); renderGrid(); });
+  $("#clear-selection").addEventListener("click", () => {
+    state.selected.clear();
+    state.selectedVideos.clear();
+    renderGrid();
+  });
   $("#queue-selected").addEventListener("click", queueSelected);
 
   const filterInput = $("#grid-filter");
@@ -954,10 +1050,15 @@ function init() {
   renderSponsorBlock();
   renderQuality();
   updateQualityHint();
+  updateConfigSummary();
   renderAdvancedPanel();
   bind();
   loadSettings();
   connectEvents();
+  // Re-check the toolchain so installing yt-dlp/ffmpeg mid-session clears the
+  // warning without a manual reload.
+  setInterval(checkHealth, 30000);
+  window.addEventListener("focus", checkHealth);
 }
 
 document.addEventListener("DOMContentLoaded", init);

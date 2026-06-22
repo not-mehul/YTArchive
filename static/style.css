@@ -451,6 +451,14 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   flex-wrap: wrap;
 }
 .meta-actions .spacer { flex: 1; }
+.queue-config-summary {
+  font-size: 0.6875rem;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .queue-config-summary { display: none; }
+}
 
 /* --- video grid ----------------------------------------------------------- */
 
@@ -473,6 +481,10 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   flex-direction: column;
 }
 .video-card:hover { border-color: var(--text-mute); }
+.video-card:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
 .video-card.selected {
   border-color: var(--amber-bright);
   background: var(--chip-bg);
@@ -619,6 +631,10 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   transition: background 0.15s, color 0.15s;
 }
 .seg button:hover { background: var(--hover-bg); color: var(--text-high); }
+.seg button:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+}
 .seg button.active {
   background: var(--amber-bright);
   color: var(--on-accent);

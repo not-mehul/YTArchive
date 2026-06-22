@@ -44,6 +44,9 @@ SCRAPE_PAGE_SIZE = 50
 
 IS_WINDOWS = os.name == "nt"
 
+# Categories yt-dlp can *remove* via --sponsorblock-remove. `poi_highlight` is a
+# single point-of-interest marker rather than a removable span, so it is
+# deliberately excluded — passing it to --sponsorblock-remove is a no-op.
 SPONSORBLOCK_CATEGORIES = {
     "sponsor",
     "selfpromo",
@@ -53,7 +56,6 @@ SPONSORBLOCK_CATEGORIES = {
     "preview",
     "filler",
     "music_offtopic",
-    "poi_highlight",
 }
 
 QUALITY_PRESETS: dict[str, dict[str, Any]] = {
@@ -402,10 +404,14 @@ class QueueManager:
         clean_sb = [c for c in sponsorblock if c in SPONSORBLOCK_CATEGORIES]
         added: list[QueueItem] = []
         with self._lock:
+            # Dedup against any non-completed item already in the queue. A
+            # previously failed/cancelled video should be re-run via Retry
+            # rather than spawning a duplicate row; completed items may be
+            # re-queued for a fresh download.
             existing_video_ids = {
                 self._items[i].video_id
                 for i in self._order
-                if self._items[i].status in {"pending", "downloading", "paused"}
+                if self._items[i].status != "completed"
             }
             for v in videos:
                 vid = v.get("video_id") or v.get("id")
@@ -530,9 +536,12 @@ class QueueManager:
                 return False
             item.status = "pending"
             item.message = "Resuming"
-            item.progress = 0.0
+            # Keep the last known percent so the bar holds its place until
+            # yt-dlp emits a real progress line off the .part file, instead of
+            # snapping back to 0%. The stale speed/eta are cleared.
             item.speed = None
             item.eta = None
+            item.finished_at = None
             snap = asdict(item)
         self._broadcast({"type": "update", "item": snap})
         self._persist()
@@ -649,10 +658,13 @@ class QueueManager:
         last_emit = 0.0
         last_progress = -1.0
         last_message: str | None = None
+        archived = False
         assert proc.stdout is not None
         try:
             for raw in proc.stdout:
                 line = raw.rstrip("\n")
+                if "has already been recorded in the archive" in line:
+                    archived = True
                 self._parse_progress(item, line)
                 now = time.time()
                 changed = item.progress != last_progress or item.message != last_message
@@ -674,6 +686,8 @@ class QueueManager:
             self._pausing.discard(item.id)
         if paused:
             self._finish(item, "paused", "Paused — partial file kept for resume")
+        elif rc == 0 and archived and not item.output_file:
+            self._finish(item, "completed", "Skipped — already in archive")
         elif rc == 0:
             self._finish(item, "completed", "Saved")
         elif rc < 0 or (IS_WINDOWS and rc in (3221225786, -1073741510)):
@@ -851,6 +865,35 @@ class QueueManager:
                 item.message = "Age-restricted — add cookies under Configuration → Cookies"
 
 
+TERMINATE_GRACE = 10  # seconds to wait after SIGTERM before SIGKILL
+
+
+def _force_kill(proc: subprocess.Popen) -> None:
+    if IS_WINDOWS:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _escalate_after_grace(proc: subprocess.Popen) -> None:
+    # A yt-dlp/ffmpeg child that ignores SIGTERM would otherwise leave the
+    # worker thread blocked on proc.wait() forever, permanently consuming a
+    # concurrency slot. Escalate to SIGKILL once the grace period lapses.
+    try:
+        proc.wait(timeout=TERMINATE_GRACE)
+    except subprocess.TimeoutExpired:
+        _force_kill(proc)
+
+
 def _terminate_proc(proc: subprocess.Popen) -> bool:
     if proc.poll() is not None:
         return False
@@ -863,13 +906,13 @@ def _terminate_proc(proc: subprocess.Popen) -> bool:
                 os.killpg(pgid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 proc.terminate()
-        return True
     except (OSError, ValueError):
         try:
             proc.terminate()
-            return True
         except Exception:
             return False
+    threading.Thread(target=_escalate_after_grace, args=(proc,), daemon=True).start()
+    return True
 
 
 manager = QueueManager()
@@ -916,18 +959,65 @@ def _thumbnail_for(video_id: str, hinted: str | None) -> str | None:
     return None
 
 
-SHORTS_DURATION_CUTOFF = 60  # seconds; canonical YouTube Shorts limit
+def _is_short(entry_url: str | None) -> bool:
+    # The `/shorts/` URL path is the only reliable signal. A duration-based
+    # heuristic was tried here but hid legitimate short uploads (clips, teasers,
+    # trailers) — plenty of real videos run under a minute, and the Shorts
+    # length ceiling has since risen to three minutes, so duration tells us
+    # nothing useful. Shorts come through flat-playlist with `/shorts/` URLs.
+    return bool(entry_url and "/shorts/" in entry_url)
 
 
-def _is_short(entry_url: str | None, duration: Any) -> bool:
-    if entry_url and "/shorts/" in entry_url:
-        return True
-    try:
-        if duration is not None and float(duration) > 0 and float(duration) <= SHORTS_DURATION_CUTOFF:
-            return True
-    except (TypeError, ValueError):
-        pass
-    return False
+# Per-URL cache of parsed flat-playlist entries. Because yt-dlp can only walk a
+# channel's continuation tokens from the top (see below), every page fetch is a
+# "1:end" scrape — so the deepest fetch already contains every shallower page.
+# Caching it makes back-navigation, Shorts-toggling, and re-renders instant
+# instead of re-running yt-dlp each time.
+_SCRAPE_CACHE: dict[str, dict[str, Any]] = {}
+_SCRAPE_CACHE_LOCK = threading.Lock()
+_SCRAPE_CACHE_TTL = 300  # seconds
+
+
+def _fetch_entries(url: str, end: int) -> list[dict[str, Any]]:
+    """Return parsed flat-playlist entries for `url`, covering items 1..end.
+
+    Served from the per-URL cache when a fresh, deep-enough scrape already
+    exists; otherwise yt-dlp is run for `1:end` and the result is cached.
+    """
+    now = time.time()
+    with _SCRAPE_CACHE_LOCK:
+        cached = _SCRAPE_CACHE.get(url)
+        if cached and cached["end"] >= end and (now - cached["ts"]) < _SCRAPE_CACHE_TTL:
+            return cached["entries"]
+    # For channel URLs yt-dlp's --playlist-items "51:100" often returns nothing
+    # because it never walks the continuation tokens past the first batch. Ask
+    # for 1:end and slice client-side — yt-dlp keeps paginating until it hits
+    # the upper bound, which is what we actually want.
+    cmd = [
+        "yt-dlp",
+        "--flat-playlist",
+        "--dump-json",
+        "--no-warnings",
+        "--ignore-no-formats-error",
+        "--playlist-items", f"1:{end}",
+        url,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=False)
+    if proc.returncode != 0 and not proc.stdout.strip():
+        msg = (proc.stderr or "").strip().splitlines()[-1] if proc.stderr else "scrape failed"
+        raise RuntimeError(msg)
+    entries: list[dict[str, Any]] = []
+    for ln in proc.stdout.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            entries.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    with _SCRAPE_CACHE_LOCK:
+        _SCRAPE_CACHE[url] = {"entries": entries, "end": end, "ts": now}
+    return entries
 
 
 def scrape_channel(url: str, start: int, end: int, ignore_shorts: bool = True) -> dict[str, Any]:
@@ -938,51 +1028,23 @@ def scrape_channel(url: str, start: int, end: int, ignore_shorts: bool = True) -
     """
     if shutil.which("yt-dlp") is None:
         raise RuntimeError("yt-dlp is not installed or not on PATH")
-    # For channel URLs yt-dlp's --playlist-items "51:100" often returns nothing
-    # because it never walks the continuation tokens past the first batch. Ask
-    # for 1:end and slice client-side — yt-dlp keeps paginating until it hits
-    # the upper bound, which is what we actually want.
-    items_arg = f"1:{end}"
-    cmd = [
-        "yt-dlp",
-        "--flat-playlist",
-        "--dump-json",
-        "--no-warnings",
-        "--ignore-no-formats-error",
-        "--playlist-items", items_arg,
-        url,
-    ]
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-    if proc.returncode != 0 and not proc.stdout.strip():
-        msg = (proc.stderr or "").strip().splitlines()[-1] if proc.stderr else "scrape failed"
-        raise RuntimeError(msg)
-    raw_lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    entries = _fetch_entries(url, end)
     # Drop everything before this page's window so we don't re-emit page 1.
-    raw_lines = raw_lines[start - 1:end]
+    window = entries[start - 1:end]
     # Entries actually present in this window, before Shorts filtering. The UI
     # uses this (not the post-filter video count) to decide whether a further
     # page exists — otherwise a window full of hidden Shorts looks like the end.
-    page_entries = len(raw_lines)
+    page_entries = len(window)
     videos: list[dict[str, Any]] = []
     channel: str | None = None
     skipped_shorts = 0
-    for line in raw_lines:
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for entry in window:
         vid = entry.get("id")
         if not vid:
             continue
         entry_url = entry.get("url") or f"https://www.youtube.com/watch?v={vid}"
         duration = entry.get("duration")
-        if ignore_shorts and _is_short(entry_url, duration):
+        if ignore_shorts and _is_short(entry_url):
             skipped_shorts += 1
             if not channel:
                 channel = entry.get("channel") or entry.get("uploader")
@@ -1223,7 +1285,11 @@ def api_events() -> Response:
     listener = manager.listen()
 
     def stream():
-        snapshot = json.dumps({"type": "snapshot", "items": manager.snapshot()})
+        snapshot = json.dumps({
+            "type": "snapshot",
+            "items": manager.snapshot(),
+            "running": manager.is_running(),
+        })
         yield f"data: {snapshot}\n\n".encode("utf-8")
         try:
             while True:
