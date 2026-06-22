@@ -28,8 +28,11 @@ const INDETERMINATE_MESSAGES = new Set([
   "Merging streams",
   "Extracting audio",
   "Embedding thumbnail",
+  "Embedding subtitles",
   "Writing metadata",
+  "Writing chapters",
   "Cutting segments",
+  "Processing",
 ]);
 
 const state = {

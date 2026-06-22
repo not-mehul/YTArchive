@@ -230,10 +230,25 @@ class ProgressTemplateTests(unittest.TestCase):
             it, "[YTPROG] 100|100|100|0|0|finished|mp4")
         self.assertEqual(it.progress, 100.0)
 
-    def test_build_command_has_template(self):
+    def test_build_command_streams_progress(self):
+        # Either the API runner (flushing hook) is used, or the binary fallback
+        # carries the --progress-template; both yield [YTPROG] lines.
         cmd = server.manager._build_command(self._item())
-        self.assertIn("--progress-template", cmd)
-        self.assertIn("[YTPROG]", cmd[cmd.index("--progress-template") + 1])
+        if any("ytdlp_runner.py" in part for part in cmd):
+            self.assertNotIn("--progress-template", cmd)  # the hook replaces it
+        else:
+            self.assertIn("--progress-template", cmd)
+            self.assertIn("[YTPROG]", cmd[cmd.index("--progress-template") + 1])
+
+    def test_pp_phase_mapping(self):
+        self.assertEqual(server.manager._pp_phase("Merger"), "Merging streams")
+        self.assertEqual(server.manager._pp_phase("ModifyChapters"), "Cutting segments")
+        self.assertEqual(server.manager._pp_phase("EmbedSubtitle"), "Embedding subtitles")
+
+    def test_ytpp_line_sets_phase(self):
+        it = self._item()
+        server.manager._parse_progress(it, "[YTPP] Merger")
+        self.assertEqual(it.message, "Merging streams")
 
 
 class BroadcastEvictionTests(unittest.TestCase):
