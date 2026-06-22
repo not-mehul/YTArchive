@@ -170,6 +170,20 @@ def _ytdlp_is_module() -> bool:
     return bool(base) and base[0] == sys.executable
 
 
+# A small wrapper that drives yt-dlp via its Python API with flushing progress
+# hooks — the only reliable way to stream progress on Windows, where yt-dlp's
+# own stdout text output is buffered and never reaches our pipe until the end.
+_RUNNER_PATH = ROOT / "ytdlp_runner.py"
+
+
+def _ytdlp_runner_cmd() -> list[str] | None:
+    """Command to run yt-dlp via the flushing API wrapper, or None if the
+    yt_dlp module isn't importable (then we fall back to the binary)."""
+    if _RUNNER_PATH.exists() and importlib.util.find_spec("yt_dlp") is not None:
+        return [sys.executable, str(_RUNNER_PATH)]
+    return None
+
+
 def _ytdlp_version() -> str | None:
     base = _ytdlp_base()
     if not base:
@@ -1020,12 +1034,20 @@ class QueueManager:
         # --progress-template "[YTPROG] …" line on stdout (works on Windows,
         # where the default progress bar does not reach the pipe). Whichever
         # lands first wins; the template uses robust raw numeric fields.
-        cmd: list[str] = list(_ytdlp_base() or ["yt-dlp"])
+        # Prefer the flushing API wrapper (streams progress on Windows). Only
+        # the binary fallback needs --progress-template, since the wrapper emits
+        # the same [YTPROG] lines from a progress hook with an explicit flush.
+        runner = _ytdlp_runner_cmd()
+        if runner is not None:
+            cmd: list[str] = list(runner)
+            use_template = False
+        else:
+            cmd = list(_ytdlp_base() or ["yt-dlp"])
+            use_template = True
+        cmd += ["--newline", "--no-colors", "--no-playlist"]
+        if use_template:
+            cmd += ["--progress-template", self._PROGRESS_TPL]
         cmd += [
-            "--newline",
-            "--no-colors",
-            "--no-playlist",
-            "--progress-template", self._PROGRESS_TPL,
             "-o", out_template,
             "--print", "after_move:filepath:%(filepath)s",
         ]
@@ -1153,6 +1175,24 @@ class QueueManager:
                 item.progress = 100.0
             item.message = self._phase_for_ext(ext)
 
+    def _pp_phase(self, name: str) -> str:
+        n = (name or "").lower()
+        if "merger" in n:
+            return "Merging streams"
+        if "modifychapters" in n or "sponsorblock" in n:
+            return "Cutting segments"
+        if "extractaudio" in n:
+            return "Extracting audio"
+        if "embedsubtitle" in n or "subtitlesconvert" in n:
+            return "Embedding subtitles"
+        if "embedthumbnail" in n:
+            return "Embedding thumbnail"
+        if "metadata" in n:
+            return "Writing metadata"
+        if "embedchapter" in n:
+            return "Writing chapters"
+        return "Processing"
+
     def _looks_age_restricted(self, text: str) -> bool:
         t = text.lower()
         return (
@@ -1176,6 +1216,10 @@ class QueueManager:
     def _parse_progress(self, item: QueueItem, line: str) -> None:
         # Strip carriage returns; yt-dlp on Windows emits CRLF.
         line = line.rstrip("\r")
+        if line.startswith("[YTPP]"):
+            with self._lock:
+                item.message = self._pp_phase(line[6:].strip())
+            return
         if "[YTPROG]" in line:
             self._parse_tpl_progress(item, line)
             return
