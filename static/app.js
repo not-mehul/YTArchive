@@ -1156,6 +1156,8 @@ function patchQItem(it) {
 
 // ---------- log viewer ----------
 
+let currentLog = { title: "", text: "" };
+
 async function openLog(id, title) {
   const modal = $("#log-modal");
   const body = $("#log-modal-body");
@@ -1163,18 +1165,43 @@ async function openLog(id, title) {
   if (!modal || !body) return;
   head.textContent = `Log · ${title}`;
   body.textContent = "Loading…";
+  currentLog = { title, text: "" };
   modal.hidden = false;
   try {
-    const data = await api(`/api/queue/log?id=${encodeURIComponent(id)}`);
-    if (!data.available || !data.lines.length) {
-      body.textContent = data.available ? "(no output captured yet)" : "(log not available — it is kept only for the current session)";
+    // Plain fetch (no JSON request headers on a GET) with explicit error
+    // reporting — the shared api() helper masked transport failures as a bare
+    // "NetworkError".
+    const resp = await fetch(`/api/queue/log?id=${encodeURIComponent(id)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    if (!resp.ok) throw new Error(`server returned HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (!data.available) {
+      body.textContent = "(no log for this item — per-item logs are kept only for the current server session and are cleared on restart. Run the server with YTARCHIVE_DEBUG=1 to also write timestamped log files to ~/.ytarchive/logs.)";
+    } else if (!data.lines.length) {
+      body.textContent = "(no output captured yet)";
     } else {
-      body.textContent = data.lines.join("\n");
+      currentLog.text = data.lines.join("\n");
+      body.textContent = currentLog.text;
       body.scrollTop = body.scrollHeight;
     }
   } catch (err) {
-    body.textContent = err.message || "Failed to load log.";
+    body.textContent =
+      `Could not load the log: ${err.message || err}.\n\n` +
+      `If this keeps happening, run the server with YTARCHIVE_DEBUG=1 and reproduce the ` +
+      `download — a timestamped raw log is written to ~/.ytarchive/logs that you can share.`;
   }
+}
+
+function saveLog() {
+  if (!currentLog.text) { toast("Nothing to save yet.", "notice"); return; }
+  const safe = (currentLog.title || "log").replace(/[^\w.-]+/g, "_").slice(0, 60);
+  const blob = new Blob([currentLog.text], { type: "text/plain" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: `ytarchive-${safe}.log` });
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
 }
 
 function closeLog() {
@@ -1356,6 +1383,8 @@ function bind() {
   if (updBtn) updBtn.addEventListener("click", updateYtdlp);
   const logClose = $("#log-modal-close");
   if (logClose) logClose.addEventListener("click", closeLog);
+  const logSave = $("#log-modal-save");
+  if (logSave) logSave.addEventListener("click", saveLog);
   const logModal = $("#log-modal");
   if (logModal) logModal.addEventListener("click", (e) => { if (e.target === logModal) closeLog(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeLog(); });
