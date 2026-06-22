@@ -110,5 +110,25 @@ class ScrapePaginationTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
 
+class BroadcastEvictionTests(unittest.TestCase):
+    def test_full_listener_keeps_newest_event(self):
+        m = server.manager
+        q = m.listen()
+        try:
+            # Saturate the listener so the next put would overflow.
+            for i in range(q.maxsize):
+                q.put_nowait(f"old{i}")
+            m._broadcast({"type": "update", "marker": "terminal"})
+            drained = []
+            while not q.empty():
+                drained.append(q.get_nowait())
+            # The newest (terminal) event must have survived the overflow...
+            self.assertTrue(any("terminal" in x for x in drained))
+            # ...and the queue must never have exceeded its bound.
+            self.assertLessEqual(len(drained), q.maxsize)
+        finally:
+            m.drop(q)
+
+
 if __name__ == "__main__":
     unittest.main()

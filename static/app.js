@@ -830,7 +830,10 @@ function handleEvent(payload) {
         renderGrid();
       }
       patchQItem(it);
-      if (it.status === "downloading") setRunning(true);
+      // Do NOT infer running-state from progress here: an in-flight download
+      // keeps emitting "downloading" events after the user clicks Hold, which
+      // would flip the toggle straight back to running. The authoritative
+      // running state arrives via "state" events and the reconnect snapshot.
       break;
     }
     case "removed": {

@@ -588,7 +588,17 @@ class QueueManager:
             try:
                 q.put_nowait(data)
             except queue.Full:
-                pass
+                # The listener is draining slower than we produce (a backgrounded
+                # tab, a slow machine). Evict the OLDEST queued event and retry so
+                # the newest event survives — crucially the terminal status
+                # updates (completed/failed/cancelled), which would otherwise be
+                # lost and leave a row stuck mid-download. Progress events are
+                # throttled and newest-wins, so dropping an older one is harmless.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(data)
+                except (queue.Empty, queue.Full):
+                    pass
 
     # ----- dispatcher + workers ----------------------------------------
 
