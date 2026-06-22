@@ -245,16 +245,44 @@ body {
 /* --- masthead ------------------------------------------------------------- */
 
 .masthead {
-  margin-bottom: 3.5rem;
+  margin-bottom: 3rem;
 }
 .masthead-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 1.75rem;
 }
 .masthead-top .eyebrow { margin: 0; }
+
+.brand {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 2.75rem;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--cream);
+  margin: 0;
+}
+
+/* round icon button (gear, etc.) in the masthead */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--input-bg);
+  color: var(--text-body);
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.icon-btn:hover { border-color: var(--text-mute); color: var(--text-high); }
+.icon-btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 
 /* --- theme toggle (Dusk ⇄ Dawn) — §8.9 ----------------------------------- */
 
@@ -456,14 +484,6 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   flex-wrap: wrap;
 }
 .meta-actions .spacer { flex: 1; }
-.queue-config-summary {
-  font-size: 0.6875rem;
-  color: var(--text-mute);
-  white-space: nowrap;
-}
-@media (max-width: 640px) {
-  .queue-config-summary { display: none; }
-}
 
 /* --- video grid ----------------------------------------------------------- */
 
@@ -837,23 +857,79 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 .toast.error { border-color: var(--err-fg); color: var(--err-fg); background: var(--err-bg); }
 .toast.notice { border-color: var(--notice-fg); color: var(--notice-fg); background: var(--notice-bg); }
 
-/* --- grid filter row ----------------------------------------------------- */
+/* --- grid filter / sort row --------------------------------------------- */
 
 .grid-filter-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
   margin-bottom: 1rem;
+  flex-wrap: wrap;
 }
-.grid-filter-row input[type="text"] {
-  flex: 1;
-  padding: 0.55rem 0.75rem;
+.filter-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 240px;
+}
+.filter-search svg {
+  position: absolute;
+  left: 0.7rem;
+  color: var(--text-decor);
+  pointer-events: none;
+}
+.filter-search input[type="text"] {
+  width: 100%;
+  padding: 0.6rem 0.75rem 0.6rem 2rem;
   font-size: 0.8125rem;
+  height: 38px;
 }
+/* keep input/select/buttons on a single visual baseline */
+.grid-filter-row .btn,
+.sort-control select {
+  height: 38px;
+}
+.sort-control {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--input-bg);
+}
+.sort-control .sort-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.7rem;
+  font-family: var(--sans);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-mute);
+  background: var(--panel-bg-faint);
+  border-right: 1px solid var(--border);
+}
+.sort-control select {
+  border: none;
+  background: transparent;
+  color: var(--text-high);
+  font-family: var(--sans);
+  font-size: 0.8125rem;
+  padding: 0 1.6rem 0 0.7rem;
+  cursor: pointer;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a8a29e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+}
+.grid-filter-row .btn { font-size: 0.6875rem; padding: 0 0.85rem; }
 .filter-count {
   font-size: 0.6875rem;
   color: var(--text-mute);
   white-space: nowrap;
+  margin-left: auto;
 }
 
 /* --- advanced settings grid --------------------------------------------- */
@@ -868,12 +944,17 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   .advanced-grid { grid-template-columns: 1fr; }
 }
 
-.concurrency-row {
+.concurrency-row,
+.field-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1rem;
+}
+.field-label {
+  font-size: 0.875rem;
+  color: var(--text-body);
 }
 .concurrency-label {
   font-size: 0.875rem;
@@ -984,49 +1065,58 @@ input[list]::-webkit-calendar-picker-indicator {
 .channel-result-name { font-family: var(--serif); font-size: 1rem; color: var(--text-strong); }
 .channel-result-url { font-size: 0.6875rem; color: var(--text-mute); word-break: break-all; }
 
-/* --- filter / sort bar -------------------------------------------------- */
-
-#sort-select,
-.advanced-filters select {
-  font-family: var(--sans);
-  font-size: 0.8125rem;
-  color: var(--text-high);
-  background: var(--input-bg);
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  padding: 0.5rem 0.6rem;
-  outline: none;
-}
-#sort-select:focus { border-color: var(--text-mute); }
+/* --- advanced filters panel --------------------------------------------- */
 
 .advanced-filters {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 1rem;
-  align-items: end;
   margin-bottom: 1rem;
-  padding: 1rem;
-  background: var(--panel-bg-faint);
+  padding: 1.25rem;
+  background: var(--panel-bg);
   border: 1px solid var(--border-soft);
   border-radius: 2px;
 }
-.filter-field .label { margin-bottom: 0.4rem; }
-.range-pair { display: flex; gap: 0.5rem; }
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1.1rem;
+}
+.filter-field .label { margin-bottom: 0.5rem; }
+.range-pair {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.range-dash { color: var(--text-decor); }
 .range-pair input {
   width: 100%;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 0.8125rem;
   color: var(--text-high);
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: 2px;
-  padding: 0.45rem 0.5rem;
+  padding: 0.5rem 0.55rem;
   outline: none;
 }
 .range-pair input:focus { border-color: var(--text-mute); }
-.filter-actions { display: flex; gap: 0.5rem; }
-.advanced-filters #filter-note { grid-column: 1 / -1; margin: 0; }
+.filter-footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+.filter-footer #filter-note { margin: 0; flex: 1; min-width: 220px; }
+.filter-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
 #toggle-filters.active { border-color: var(--amber-bright); color: var(--text-high); }
+
+/* icon-only ghost buttons (page nav, clear, etc.) */
+.btn-icon {
+  padding: 0;
+  width: 38px;
+  justify-content: center;
+}
 
 /* --- SponsorBlock mode toggle ------------------------------------------- */
 
@@ -1152,9 +1242,39 @@ input[list]::-webkit-calendar-picker-indicator {
   margin: 0;
   padding: 1rem 1.1rem;
   overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
   font-size: 0.75rem;
   line-height: 1.5;
   color: var(--text-body);
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* --- settings modal ----------------------------------------------------- */
+
+.settings-modal { width: min(920px, 100%); max-height: 88vh; }
+.settings-body {
+  padding: 1.25rem 1.4rem 1.6rem;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.settings-group { margin-bottom: 1.75rem; }
+.settings-group:last-child { margin-bottom: 0; }
+.settings-group-title {
+  font-family: var(--sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--text-mute);
+  margin: 0 0 0.85rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-hair);
+}
+.settings-body .config-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 720px) {
+  .settings-body .config-grid { grid-template-columns: 1fr; }
+}
+.settings-body .panel { background: var(--panel-bg-faint); }

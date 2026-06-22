@@ -42,11 +42,11 @@ const state = {
   filter: "",
   sort: "newest",
   filters: { durationMin: "", durationMax: "", viewsMin: "", viewsMax: "", dateFrom: "", dateTo: "" },
-  selected: new Set(),
-  // video_id -> video payload, kept across page navigation so a multi-page
-  // selection survives until it is queued or cleared.
-  selectedVideos: new Map(),
+  // Clicking a card queues/unqueues it directly, so "selection" == queue
+  // membership. queuedIds is recomputed from the live queue; pendingClicks
+  // briefly holds optimistic toggles until the SSE event reconciles them.
   queuedIds: new Set(),
+  videoById: new Map(),   // video_id -> payload, for unqueue/bulk lookups
   sbCategories: null,
   quality: "1080p",
   sponsorblock: new Set(["sponsor", "selfpromo"]),
@@ -184,7 +184,6 @@ function renderSponsorBlock() {
       if (input.checked) state.sponsorblock.add(catId);
       else state.sponsorblock.delete(catId);
       persistChoices();
-      updateConfigSummary();
     });
     const box = el("span", { class: "box" }, [svgEl(`<path d="m5 12 5 5L20 7"/>`, 12)]);
     grid.appendChild(el("label", { class: "check", for: id }, [input, box, SB_LABELS[catId] || catId]));
@@ -195,7 +194,6 @@ function selectQuality(id) {
   state.quality = id;
   renderQuality();
   updateQualityHint();
-  updateConfigSummary();
   persistChoices();
   const active = $("#quality-seg button.active");
   if (active) active.focus();
@@ -227,16 +225,6 @@ function renderQuality() {
     });
     seg.appendChild(btn);
   });
-}
-
-function updateConfigSummary() {
-  const node = $("#queue-config-summary");
-  if (!node) return;
-  const n = state.sponsorblock.size;
-  const verb = state.sbMode === "mark" ? "mark" : "cut";
-  const sb = n === 0 ? "no SponsorBlock" : `${verb} ${n} SponsorBlock categor${n === 1 ? "y" : "ies"}`;
-  const subs = state.subtitles ? " · subs" : "";
-  node.textContent = `${qualityLabel(state.quality)} · ${sb}${subs}`;
 }
 
 function updateQualityHint() {
@@ -316,11 +304,24 @@ async function scrape() {
   state.page = 1;
   state.filter = "";
   $("#grid-filter").value = "";
-  // A fresh search starts a fresh selection.
-  state.selected.clear();
-  state.selectedVideos.clear();
   hideChannelResults();
   await loadPage();
+}
+
+function videoPayload(v) {
+  return {
+    video_id: v.video_id, url: v.url, title: v.title,
+    thumbnail: v.thumbnail, duration: v.duration,
+  };
+}
+
+function queueAddBody(videos) {
+  return JSON.stringify({
+    videos,
+    quality: state.quality,
+    sponsorblock: Array.from(state.sponsorblock),
+    sponsorblock_mode: state.sbMode,
+  });
 }
 
 async function loadPage() {
@@ -350,9 +351,9 @@ async function loadPage() {
     // The server may clamp the page (e.g. filtering shrank the result set).
     if (typeof data.page === "number") state.page = data.page;
     state.videos = data.videos || [];
+    for (const v of state.videos) state.videoById.set(v.video_id, v);
     state.filtered = !!data.filtered;
     state.totalPages = data.total_pages != null ? data.total_pages : null;
-    // Selection persists across pages — see queueSelected / state.selectedVideos.
     renderMeta(data);
     renderGrid();
     renderShortsNote(data);
@@ -368,12 +369,11 @@ async function loadPage() {
 }
 
 function renderMeta(data) {
-  $("#meta-channel").textContent = data.channel || "—";
   $("#meta-page").textContent = data.total_pages
     ? `${data.page} / ${data.total_pages}`
     : String(data.page);
   $("#meta-count").textContent = String(data.count || 0);
-  $("#meta-selected").textContent = String(state.selected.size);
+  updateSelectedCount();
   $("#prev-page").disabled = state.page <= 1;
   if (data.filtered) {
     $("#next-page").disabled = state.page >= (data.total_pages || 1);
@@ -409,24 +409,21 @@ function renderGrid() {
   $("#grid-empty").hidden = true;
   for (const v of items) {
     const queued = state.queuedIds.has(v.video_id);
-    const selected = state.selected.has(v.video_id);
     const card = el("article", {
-      class: `video-card${selected ? " selected" : ""}${queued ? " queued" : ""}`,
+      class: `video-card${queued ? " selected" : ""}`,
       "data-id": v.video_id,
       role: "button",
-      tabindex: queued ? "-1" : "0",
-      "aria-pressed": selected ? "true" : "false",
-      "aria-label": `${queued ? "Queued: " : "Select "}${v.title || v.video_id}`,
+      tabindex: "0",
+      "aria-pressed": queued ? "true" : "false",
+      "aria-label": `${queued ? "Queued: " : "Queue "}${v.title || v.video_id}`,
     });
-    if (!queued) {
-      card.addEventListener("click", () => toggleSelect(v.video_id));
-      card.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          toggleSelect(v.video_id);
-        }
-      });
-    }
+    card.addEventListener("click", () => toggleCard(v.video_id));
+    card.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggleCard(v.video_id);
+      }
+    });
     const thumb = el("div", { class: "thumb-wrap" });
     if (v.thumbnail) {
       thumb.appendChild(el("img", { src: v.thumbnail, alt: "", loading: "lazy" }));
@@ -450,6 +447,62 @@ function renderGrid() {
     grid.appendChild(card);
   }
   updateSelectedCount();
+}
+
+// Clicking a card queues it immediately; clicking a queued (still-pending)
+// card removes it. Optimistic UI is reconciled by the SSE queue events.
+async function toggleCard(videoId) {
+  const v = state.videoById.get(videoId) || state.videos.find((x) => x.video_id === videoId);
+  if (!v) return;
+  if (state.queuedIds.has(videoId)) {
+    const qi = state.queue.find(
+      (q) => q.video_id === videoId && (q.status === "pending" || q.status === "paused"),
+    );
+    if (!qi) { toast("Already downloading or finished — can't unqueue.", "notice"); return; }
+    state.queuedIds.delete(videoId);
+    markCard(videoId, false);
+    updateSelectedCount();
+    try { await api("/api/queue/remove", { method: "POST", body: JSON.stringify({ id: qi.id }) }); }
+    catch (err) { toast(err.message, "error"); }
+  } else {
+    state.queuedIds.add(videoId);
+    markCard(videoId, true);
+    updateSelectedCount();
+    try { await api("/api/queue/add", { method: "POST", body: queueAddBody([videoPayload(v)]) }); }
+    catch (err) { toast(err.message, "error"); }
+  }
+}
+
+function markCard(videoId, on) {
+  const card = document.querySelector(`.video-card[data-id="${videoId}"]`);
+  if (!card) return;
+  card.classList.toggle("selected", on);
+  card.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+async function selectPage() {
+  const toAdd = visibleVideos().filter((v) => !state.queuedIds.has(v.video_id));
+  if (!toAdd.length) { toast("Everything on this page is already queued.", "notice"); return; }
+  for (const v of toAdd) { state.queuedIds.add(v.video_id); markCard(v.video_id, true); }
+  updateSelectedCount();
+  try {
+    const r = await api("/api/queue/add", { method: "POST", body: queueAddBody(toAdd.map(videoPayload)) });
+    toast(`Queued ${r.count || 0} item${(r.count || 0) === 1 ? "" : "s"}.`);
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function clearPageSelection() {
+  const removable = state.queue.filter(
+    (q) => (q.status === "pending" || q.status === "paused") &&
+           state.videos.some((v) => v.video_id === q.video_id),
+  );
+  if (!removable.length) { toast("Nothing queued on this page to remove.", "notice"); return; }
+  for (const q of removable) { state.queuedIds.delete(q.video_id); markCard(q.video_id, false); }
+  updateSelectedCount();
+  for (const q of removable) {
+    try { await api("/api/queue/remove", { method: "POST", body: JSON.stringify({ id: q.id }) }); }
+    catch (err) { /* reconciled by SSE */ }
+  }
 }
 
 function renderShortsNote(data) {
@@ -543,28 +596,11 @@ async function saveSubtitles() {
   } catch (err) { toast(err.message, "error"); }
 }
 
-function toggleSelect(videoId) {
-  if (state.queuedIds.has(videoId)) return;
-  if (state.selected.has(videoId)) {
-    state.selected.delete(videoId);
-    state.selectedVideos.delete(videoId);
-  } else {
-    state.selected.add(videoId);
-    const v = state.videos.find((x) => x.video_id === videoId);
-    if (v) state.selectedVideos.set(videoId, v);
-  }
-  const card = document.querySelector(`.video-card[data-id="${videoId}"]`);
-  if (card) {
-    const on = state.selected.has(videoId);
-    card.classList.toggle("selected", on);
-    card.setAttribute("aria-pressed", on ? "true" : "false");
-  }
-  updateSelectedCount();
-}
-
 function updateSelectedCount() {
-  $("#meta-selected").textContent = String(state.selected.size);
-  $("#queue-selected").disabled = state.selected.size === 0;
+  // "Selected" now reflects how many videos on the current page are queued.
+  const n = state.videos.filter((v) => state.queuedIds.has(v.video_id)).length;
+  const cell = $("#meta-selected");
+  if (cell) cell.textContent = String(n);
 }
 
 // ---------- settings ----------
@@ -659,7 +695,6 @@ function applySettings(s) {
   renderSubtitlesPanel();
   renderQuality();
   updateQualityHint();
-  updateConfigSummary();
   renderAdvancedPanel();
 }
 
@@ -730,36 +765,6 @@ async function saveConcurrency() {
 }
 
 // ---------- queue ----------
-
-async function queueSelected() {
-  if (state.selected.size === 0) return;
-  // Pull from the cross-page selection map, not just the current page.
-  const videos = Array.from(state.selectedVideos.values()).map((v) => ({
-    video_id: v.video_id,
-    url: v.url,
-    title: v.title,
-    thumbnail: v.thumbnail,
-    duration: v.duration,
-  }));
-  try {
-    const r = await api("/api/queue/add", {
-      method: "POST",
-      body: JSON.stringify({
-        videos,
-        quality: state.quality,
-        sponsorblock: Array.from(state.sponsorblock),
-        sponsorblock_mode: state.sbMode,
-      }),
-    });
-    for (const it of r.added || []) state.queuedIds.add(it.video_id);
-    state.selected.clear();
-    state.selectedVideos.clear();
-    renderGrid();
-    toast(`Queued ${r.count || 0} item${(r.count || 0) === 1 ? "" : "s"}.`);
-  } catch (err) {
-    toast(err.message || String(err), "error");
-  }
-}
 
 function recomputeQueuedIds() {
   state.queuedIds = new Set(
@@ -1209,6 +1214,19 @@ function closeLog() {
   if (modal) modal.hidden = true;
 }
 
+// ---------- settings modal ----------
+
+function openSettings() {
+  const modal = $("#settings-modal");
+  if (modal) modal.hidden = false;
+  checkHealth();  // refresh versions / disk while the panel is open
+}
+
+function closeSettings() {
+  const modal = $("#settings-modal");
+  if (modal) modal.hidden = true;
+}
+
 // ---------- yt-dlp self-update ----------
 
 async function updateYtdlp() {
@@ -1284,21 +1302,8 @@ function bind() {
   });
   $("#prev-page").addEventListener("click", () => { if (state.page > 1) { state.page--; loadPage(); } });
   $("#next-page").addEventListener("click", () => { state.page++; loadPage(); });
-  $("#select-page").addEventListener("click", () => {
-    for (const v of visibleVideos()) {
-      if (!state.queuedIds.has(v.video_id)) {
-        state.selected.add(v.video_id);
-        state.selectedVideos.set(v.video_id, v);
-      }
-    }
-    renderGrid();
-  });
-  $("#clear-selection").addEventListener("click", () => {
-    state.selected.clear();
-    state.selectedVideos.clear();
-    renderGrid();
-  });
-  $("#queue-selected").addEventListener("click", queueSelected);
+  $("#select-page").addEventListener("click", selectPage);
+  $("#clear-selection").addEventListener("click", clearPageSelection);
 
   // Whole-channel title search (debounced — each change re-scrapes).
   let filterTimer = null;
@@ -1356,7 +1361,6 @@ function bind() {
     b.addEventListener("click", () => {
       state.sbMode = b.dataset.mode === "mark" ? "mark" : "remove";
       renderSbMode();
-      updateConfigSummary();
       persistChoices();
     });
   });
@@ -1365,7 +1369,6 @@ function bind() {
   const subsEnabled = $("#subs-enabled");
   if (subsEnabled) subsEnabled.addEventListener("change", () => {
     state.subtitles = subsEnabled.checked;
-    updateConfigSummary();
     saveSubtitles();
   });
   const subsLangs = $("#subs-langs");
@@ -1387,7 +1390,16 @@ function bind() {
   if (logSave) logSave.addEventListener("click", saveLog);
   const logModal = $("#log-modal");
   if (logModal) logModal.addEventListener("click", (e) => { if (e.target === logModal) closeLog(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeLog(); });
+
+  // Settings modal.
+  const settingsBtn = $("#settings-btn");
+  if (settingsBtn) settingsBtn.addEventListener("click", openSettings);
+  const settingsClose = $("#settings-close");
+  if (settingsClose) settingsClose.addEventListener("click", closeSettings);
+  const settingsModal = $("#settings-modal");
+  if (settingsModal) settingsModal.addEventListener("click", (e) => { if (e.target === settingsModal) closeSettings(); });
+
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeLog(); closeSettings(); } });
 
   $("#dest-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1454,7 +1466,6 @@ function init() {
   renderSubtitlesPanel();
   renderQuality();
   updateQualityHint();
-  updateConfigSummary();
   renderAdvancedPanel();
   bind();
   loadSettings();

@@ -63,17 +63,16 @@ YTARCHIVE_HOST=127.0.0.1 YTARCHIVE_PORT=8765 python3 server.py
 1. In **Source**, paste a channel/playlist URL, an `@handle`, or just type
    a channel **name** to search and pick from the results. Hit **Fetch**.
    Videos are pulled in pages of 50.
-2. Click thumbnails to mark videos for queueing — selection persists as you
-   walk pages with the arrows. Use the filter/sort bar to **search titles,
-   filter by duration/views/date, and sort across the whole channel**.
-3. In **Configuration**, choose SponsorBlock segments and whether to
-   **Remove** them (cut, the default) or **Mark as chapters**; pick a quality
-   preset; optionally enable **Subtitles** (embedded captions stay in sync
-   with SponsorBlock cuts).
-4. Set a **Destination** folder (defaults to `./downloads`). The engine strip
-   shows yt-dlp/ffmpeg versions and free disk, with an **Update yt-dlp** button.
-5. Hit **Queue selected**, then **Start** in the Queue section.
-6. Watch live progress and the **aggregate stats** (remaining, speed, archived
+2. **Click a thumbnail to queue it instantly** (click again to remove it).
+   The page-actions let you queue or unqueue a whole page at once. Use the
+   filter/sort bar to **search titles, filter by duration/views/date, and
+   sort across the whole channel**.
+3. Open **Settings** (the gear, top-right) to configure everything: SponsorBlock
+   segments and **Remove** vs **Mark as chapters**, quality preset, **Subtitles**,
+   library embedding, cookies, concurrency/archive, the **download path**, the
+   yt-dlp/ffmpeg versions (with an **Update yt-dlp** button), and free disk.
+4. Hit **Start** in the Queue section.
+5. Watch live progress and the **aggregate stats** (remaining, speed, archived
    size, ETA). Each row has a **log** button to inspect the full yt-dlp output;
    failed items can be diagnosed without re-running in a terminal.
 
