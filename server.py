@@ -640,6 +640,13 @@ class QueueManager:
         self._broadcast({"type": "update", "item": asdict(item)})
 
         cmd = self._build_command(item)
+        # Force yt-dlp's own stdout to stay unbuffered. yt-dlp is a Python
+        # program, and Python block-buffers stdout when it is a pipe rather than
+        # a TTY — progress lines then pile up and surface as a single 0%→100%
+        # jump at the very end instead of streaming. PYTHONUNBUFFERED guarantees
+        # line-by-line output. (This is the buffering half of a symptom whose
+        # other half was a progress-line parsing bug; see _build_command.)
+        child_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         popen_kwargs: dict[str, Any] = dict(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -647,6 +654,7 @@ class QueueManager:
             bufsize=1,
             encoding="utf-8",
             errors="replace",
+            env=child_env,
         )
         if IS_WINDOWS:
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
