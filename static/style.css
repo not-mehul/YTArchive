@@ -1137,6 +1137,7 @@ input[list]::-webkit-calendar-picker-indicator {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.modal-head-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 .modal-close {
   background: transparent;
   border: 1px solid var(--border);

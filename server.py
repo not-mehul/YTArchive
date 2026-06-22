@@ -44,6 +44,17 @@ HISTORY_MAX = 10
 
 SCRAPE_PAGE_SIZE = 50
 
+
+def _env_truthy(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# When YTARCHIVE_DEBUG is set, every download's raw yt-dlp output is written —
+# with per-line wall-clock offsets — to STATE_DIR/logs so streaming cadence and
+# the exact line format can be inspected and shared.
+DEBUG = _env_truthy("YTARCHIVE_DEBUG")
+DOWNLOAD_LOG_DIR = STATE_DIR / "logs"
+
 IS_WINDOWS = os.name == "nt"
 
 # Categories yt-dlp can *remove* via --sponsorblock-remove. `poi_highlight` is a
@@ -659,6 +670,28 @@ class QueueManager:
             buf = self._logs.get(item_id)
             return list(buf) if buf is not None else None
 
+    def _open_debug_log(self, item: QueueItem, cmd: list[str]):
+        """When YTARCHIVE_DEBUG is set, open a per-download log file that records
+        the command and every output line with a wall-clock offset, so streaming
+        cadence (vs a single end-of-run flush) is visible at a glance."""
+        if not DEBUG:
+            return None
+        try:
+            DOWNLOAD_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            safe_vid = re.sub(r"[^\w.-]", "_", item.video_id)[:40]
+            path = DOWNLOAD_LOG_DIR / f"{stamp}-{safe_vid}.log"
+            fh = open(path, "w", encoding="utf-8")
+            fh.write(f"# title: {item.title}\n# quality: {item.quality}\n")
+            fh.write("# cmd: " + " ".join(cmd) + "\n")
+            fh.write("# Each line is prefixed with seconds since the process started.\n\n")
+            fh.flush()
+            print(f"[ytarchive] debug log → {path}", file=sys.stderr)
+            return fh
+        except OSError as exc:
+            print(f"[ytarchive] could not open debug log: {exc}", file=sys.stderr)
+            return None
+
     # ----- aggregate stats --------------------------------------------
 
     def stats(self) -> dict[str, Any]:
@@ -838,10 +871,21 @@ class QueueManager:
         last_progress = -1.0
         last_message: str | None = None
         archived = False
+        debug_fh = self._open_debug_log(item, cmd)
+        t0 = time.time()
         assert proc.stdout is not None
         try:
-            for raw in proc.stdout:
+            # readline() rather than `for line in stdout` — iterator read-ahead
+            # can buffer lines on some platforms, which would make progress
+            # surface as a single 0%→100% jump at the end.
+            for raw in iter(proc.stdout.readline, ""):
                 line = raw.rstrip("\n")
+                if debug_fh is not None:
+                    try:
+                        debug_fh.write(f"[+{time.time() - t0:8.3f}s] {line}\n")
+                        debug_fh.flush()
+                    except OSError:
+                        pass
                 self._log_line(item.id, line)
                 if "has already been recorded in the archive" in line:
                     archived = True
@@ -855,6 +899,12 @@ class QueueManager:
                     last_message = item.message
         except Exception:
             pass
+        finally:
+            if debug_fh is not None:
+                try:
+                    debug_fh.close()
+                except OSError:
+                    pass
         # Flush any tail update so the bar reaches its final value before
         # the completion event arrives.
         if item.progress != last_progress or item.message != last_message:
@@ -1855,7 +1905,10 @@ def main() -> None:
     host = os.environ.get("YTARCHIVE_HOST", "127.0.0.1")
     port = int(os.environ.get("YTARCHIVE_PORT", "8765"))
     print(f"\nYTArchive bridge → http://{host}:{port}")
-    print(f"State file:       {STATE_FILE}\n")
+    print(f"State file:       {STATE_FILE}")
+    if DEBUG:
+        print(f"Debug logs:       {DOWNLOAD_LOG_DIR}  (raw yt-dlp output, timestamped)")
+    print()
     app.run(host=host, port=port, threaded=True, debug=False)
 
 
