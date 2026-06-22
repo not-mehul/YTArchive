@@ -1012,14 +1012,11 @@ class QueueManager:
 
     # ----- yt-dlp command + parsing ------------------------------------
 
-    # A machine-readable progress line emitted via --progress-template. We use
-    # RAW numeric fields (downloaded/total bytes, speed, eta) rather than yt-dlp's
-    # space-padded human strings, which were the brittle part of an earlier
-    # template attempt. Critically, --progress-template output is routed through
-    # yt-dlp's stdout "screen" channel — the SAME channel as --print, which on
-    # Windows is delivered to our pipe even when the default progress bar (which
-    # goes elsewhere) is not. This is what makes the bar move on Windows instead
-    # of jumping 0%→100% at the end.
+    # Machine-readable progress line for the BINARY fallback (no yt_dlp module):
+    # raw numeric fields emitted via --progress-template. The preferred path is
+    # ytdlp_runner.py, which emits the identical "[YTPROG]" line from a progress
+    # hook with an explicit flush — the only thing that reliably streams on
+    # Windows, where yt-dlp buffers its own stdout text output.
     _PROGRESS_TPL = (
         "download:[YTPROG] %(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
         "%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|"
@@ -1029,14 +1026,9 @@ class QueueManager:
     def _build_command(self, item: QueueItem) -> list[str]:
         preset = QUALITY_PRESETS[item.quality]
         out_template = str(self._download_dir / "%(uploader)s/%(title)s [%(id)s].%(ext)s")
-        # Progress arrives two ways and we parse both: yt-dlp's default
-        # "[download] 12.3% of …" line (works on macOS/Linux) AND our
-        # --progress-template "[YTPROG] …" line on stdout (works on Windows,
-        # where the default progress bar does not reach the pipe). Whichever
-        # lands first wins; the template uses robust raw numeric fields.
-        # Prefer the flushing API wrapper (streams progress on Windows). Only
-        # the binary fallback needs --progress-template, since the wrapper emits
-        # the same [YTPROG] lines from a progress hook with an explicit flush.
+        # Prefer the flushing API wrapper (ytdlp_runner.py) — it is the only way
+        # progress streams on Windows. Only the binary fallback needs
+        # --progress-template; both yield the same "[YTPROG]" lines we parse.
         runner = _ytdlp_runner_cmd()
         if runner is not None:
             cmd: list[str] = list(runner)
@@ -1100,11 +1092,6 @@ class QueueManager:
         cmd.append(item.url)
         return cmd
 
-    _PROGRESS_RE = re.compile(
-        r"\[download\]\s+(?P<pct>[\d.]+)%(?:\s+of\s+~?\s*(?P<size>[\d.]+\w+))?"
-        r"(?:\s+at\s+(?P<speed>[^\s]+))?"
-        r"(?:\s+ETA\s+(?P<eta>[\d:]+))?"
-    )
     _FILEPATH_RE = re.compile(r"^filepath:(.+)$")
     _ERROR_RE = re.compile(r"^ERROR:\s*(.+)$", re.IGNORECASE)
     _DESTINATION_RE = re.compile(r"^\[download\]\s+Destination:\s*(.+)$")
@@ -1202,17 +1189,6 @@ class QueueManager:
             or "confirm you're not a bot" in t
         )
 
-    @staticmethod
-    def _clean_tpl_value(v: str | None) -> str | None:
-        if v is None:
-            return None
-        v = v.strip()
-        if not v or v in ("NA", "N/A", "Unknown", "--"):
-            return None
-        if v.startswith("Unknown") or v.startswith("--"):
-            return None
-        return v
-
     def _parse_progress(self, item: QueueItem, line: str) -> None:
         # Strip carriage returns; yt-dlp on Windows emits CRLF.
         line = line.rstrip("\r")
@@ -1222,24 +1198,6 @@ class QueueManager:
             return
         if "[YTPROG]" in line:
             self._parse_tpl_progress(item, line)
-            return
-        m = self._PROGRESS_RE.search(line)
-        if m:
-            with self._lock:
-                item.progress = float(m.group("pct"))
-                item.speed = self._clean_tpl_value(m.group("speed"))
-                item.eta = self._clean_tpl_value(m.group("eta"))
-                # Numeric byte tracking for aggregate stats.
-                size = _parse_size_str(m.group("size"))
-                if size:
-                    item.total_bytes = size
-                item.speed_bps = _parse_speed_str(item.speed)
-                if item.total_bytes is not None:
-                    item.downloaded_bytes = item.total_bytes * (item.progress / 100.0)
-                # Preserve "Downloading video / audio / thumbnail" phase set
-                # by the most recent Destination line.
-                if not (item.message or "").startswith("Downloading"):
-                    item.message = "Downloading"
             return
         dest = self._DESTINATION_RE.match(line)
         if dest:
@@ -1295,36 +1253,6 @@ class QueueManager:
 # ---------------------------------------------------------------------------
 # Byte / size / disk helpers
 # ---------------------------------------------------------------------------
-
-_SIZE_UNITS = {
-    "b": 1, "kib": 1024, "mib": 1024**2, "gib": 1024**3, "tib": 1024**4,
-    "kb": 1000, "mb": 1000**2, "gb": 1000**3, "tb": 1000**4,
-    "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4,
-}
-_SIZE_RE = re.compile(r"^\s*([\d.]+)\s*([a-zA-Z]+)?\s*$")
-
-
-def _parse_size_str(s: str | None) -> float | None:
-    """'10.00MiB' -> bytes. Returns None for missing/unparseable values."""
-    if not s:
-        return None
-    m = _SIZE_RE.match(s)
-    if not m:
-        return None
-    try:
-        val = float(m.group(1))
-    except ValueError:
-        return None
-    unit = (m.group(2) or "b").lower().rstrip("/s")
-    return val * _SIZE_UNITS.get(unit, 1)
-
-
-def _parse_speed_str(s: str | None) -> float | None:
-    """'1.20MiB/s' -> bytes per second."""
-    if not s:
-        return None
-    return _parse_size_str(s.rstrip("/s").strip()) if s else None
-
 
 def _human_bytes(n: float | None) -> str:
     if not n or n <= 0:
@@ -2081,18 +2009,31 @@ def main() -> None:
     port = int(os.environ.get("YTARCHIVE_PORT", "8765"))
     print(f"\nCura bridge →     http://{host}:{port}")
     print(f"State file:       {STATE_FILE}")
-    base = _ytdlp_base()
-    if base is None:
-        print("yt-dlp:           NOT FOUND — install it (pip install yt-dlp)")
-    elif _ytdlp_is_module():
-        print(f"yt-dlp:           python -m yt_dlp ({_ytdlp_version() or '?'}) — progress streams")
+    if _ytdlp_runner_cmd() is not None:
+        print(f"yt-dlp:           API runner ({_ytdlp_version() or '?'}) — progress streams")
+    elif _ytdlp_available():
+        print(f"yt-dlp:           {(_ytdlp_base() or [''])[0]} ({_ytdlp_version() or '?'}) — "
+              "standalone binary; progress may buffer on Windows. `pip install yt-dlp` for live progress.")
     else:
-        print(f"yt-dlp:           {base[0]} ({_ytdlp_version() or '?'}) — standalone binary; "
-              "progress may buffer on Windows. `pip install yt-dlp` for live progress.")
+        print("yt-dlp:           NOT FOUND — install it (pip install yt-dlp)")
     if DEBUG:
         print(f"Debug logs:       {DOWNLOAD_LOG_DIR}  (raw yt-dlp output, timestamped)")
     print()
-    app.run(host=host, port=port, threaded=True, debug=False)
+
+    # Prefer the waitress WSGI server: it serves concurrent requests reliably
+    # while a long-lived SSE stream is open (the Flask dev server can drop
+    # requests mid-download, surfacing as a "NetworkError" on the log fetch).
+    # Fall back to the dev server if waitress isn't installed.
+    try:
+        from waitress import serve
+    except ImportError:
+        print("(waitress not installed — using the Flask dev server; "
+              "`pip install -r requirements.txt` for more robust serving)\n")
+        app.run(host=host, port=port, threaded=True, debug=False)
+        return
+    # `threads` caps concurrent workers; each open SSE connection holds one for
+    # its lifetime, so allow plenty of headroom for multiple tabs + requests.
+    serve(app, host=host, port=port, threads=16, channel_timeout=300, ident="Cura")
 
 
 if __name__ == "__main__":
