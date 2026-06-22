@@ -1,1 +1,4 @@
 Flask>=3.0.0
+# Installing yt-dlp here lets the server run it as `python -m yt_dlp`, which
+# streams download progress reliably (the standalone Windows binary buffers it).
+yt-dlp>=2024.1.0

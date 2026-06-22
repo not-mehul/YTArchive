@@ -637,10 +637,24 @@ async function checkHealth() {
 function renderEngineStrip(h) {
   const yv = $("#ytdlp-ver");
   const fv = $("#ffmpeg-ver");
-  if (yv) yv.textContent = h.yt_dlp ? (h.yt_dlp_version || "ok") : "missing";
+  if (yv) {
+    yv.textContent = h.yt_dlp
+      ? `${h.yt_dlp_version || "ok"}${h.yt_dlp_source === "binary" ? " · binary" : ""}`
+      : "missing";
+  }
   if (fv) fv.textContent = h.ffmpeg ? (h.ffmpeg_version || "ok") : "missing";
   const upd = $("#update-ytdlp");
   if (upd) upd.disabled = !h.yt_dlp;
+  // The standalone binary buffers progress on Windows; nudge toward the module.
+  const note = $("#ytdlp-note");
+  if (note) {
+    if (h.yt_dlp_source === "binary") {
+      note.hidden = false;
+      note.textContent = "Using the standalone yt-dlp binary — progress can stall on Windows. Run `pip install yt-dlp` so the server can use python -m yt_dlp for live progress.";
+    } else {
+      note.hidden = true;
+    }
+  }
 }
 
 function renderDisk(h) {
@@ -1175,11 +1189,16 @@ async function openLog(id, title) {
   try {
     // Plain fetch (no JSON request headers on a GET) with explicit error
     // reporting — the shared api() helper masked transport failures as a bare
-    // "NetworkError".
-    const resp = await fetch(`/api/queue/log?id=${encodeURIComponent(id)}`, {
-      method: "GET",
-      cache: "no-store",
-    });
+    // "NetworkError". Retry once: the dev server can drop a request when it is
+    // busy streaming SSE + a download at the same moment.
+    const url = `/api/queue/log?id=${encodeURIComponent(id)}`;
+    let resp;
+    try {
+      resp = await fetch(url, { method: "GET", cache: "no-store" });
+    } catch (e) {
+      await new Promise((r) => setTimeout(r, 400));
+      resp = await fetch(url, { method: "GET", cache: "no-store" });
+    }
     if (!resp.ok) throw new Error(`server returned HTTP ${resp.status}`);
     const data = await resp.json();
     if (!data.available) {

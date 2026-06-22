@@ -36,7 +36,10 @@
   <main class="page">
     <header class="masthead">
       <div class="masthead-top">
-        <h1 class="brand">Cura</h1>
+        <div class="brand-block">
+          <h1 class="brand">Cura<span class="brand-dot">.</span></h1>
+          <p class="brand-tag">Curated, local-first archival — <em>keep what's worth keeping.</em></p>
+        </div>
         <div class="masthead-right">
           <span class="conn-pill" id="conn-pill" data-state="connecting" title="Live connection to the bridge">
             <span class="conn-dot"></span><span class="conn-label">connecting…</span>
@@ -122,11 +125,13 @@
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg>
         </button>
         <span class="spacer"></span>
-        <button class="btn btn-ghost btn-icon" id="select-page" type="button" title="Queue every video on this page" aria-label="Queue every video on this page">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+        <button class="btn btn-ghost btn-compact" id="select-page" type="button" title="Queue every video on this page">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+          Queue all
         </button>
-        <button class="btn btn-ghost btn-icon" id="clear-selection" type="button" title="Unqueue this page" aria-label="Unqueue this page">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg>
+        <button class="btn btn-ghost btn-compact" id="clear-selection" type="button" title="Unqueue this page">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg>
+          Unqueue all
         </button>
       </div>
     </section>
@@ -177,12 +182,12 @@
               <input id="f-views-max" type="number" min="0" step="1" placeholder="max" />
             </div>
           </div>
-          <div class="filter-field">
+          <div class="filter-field filter-field-date">
             <span class="label">Upload date</span>
             <div class="range-pair">
-              <input id="f-date-from" type="date" />
+              <input id="f-date-from" type="date" aria-label="Upload date from" />
               <span class="range-dash">–</span>
-              <input id="f-date-to" type="date" />
+              <input id="f-date-to" type="date" aria-label="Upload date to" />
             </div>
           </div>
         </div>
@@ -418,6 +423,7 @@
               <span class="spacer"></span>
               <span class="engine-tool mono" id="disk-readout"></span>
             </div>
+            <p class="hint" id="ytdlp-note" hidden style="color: var(--notice-fg);"></p>
           </div>
         </div>
 

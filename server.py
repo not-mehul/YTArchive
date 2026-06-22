@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
+import importlib.util
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -133,6 +134,53 @@ COOKIE_BROWSERS = (
     "brave", "chrome", "chromium", "edge", "firefox",
     "opera", "safari", "vivaldi", "whale",
 )
+
+
+# ---------------------------------------------------------------------------
+# yt-dlp invocation
+# ---------------------------------------------------------------------------
+#
+# Prefer running yt-dlp as a module under *our* interpreter
+# (`python -m yt_dlp`) over the standalone `yt-dlp` binary. The Windows
+# standalone build (PyInstaller-frozen) block-buffers its progress output when
+# stdout is a pipe and never flushes it, so the live progress bar / speed / ETA
+# never reach us — the download appears to jump straight from 0% to 100%.
+# Running the module under our own Python (with PYTHONUNBUFFERED set in the
+# child env) streams progress line-by-line, which is what the UI needs.
+
+def _ytdlp_base() -> list[str] | None:
+    """Return the command prefix used to invoke yt-dlp, or None if unavailable."""
+    try:
+        if importlib.util.find_spec("yt_dlp") is not None:
+            return [sys.executable, "-m", "yt_dlp"]
+    except (ImportError, ValueError):
+        pass
+    binary = shutil.which("yt-dlp")
+    if binary:
+        return [binary]
+    return None
+
+
+def _ytdlp_available() -> bool:
+    return _ytdlp_base() is not None
+
+
+def _ytdlp_is_module() -> bool:
+    base = _ytdlp_base()
+    return bool(base) and base[0] == sys.executable
+
+
+def _ytdlp_version() -> str | None:
+    base = _ytdlp_base()
+    if not base:
+        return None
+    try:
+        out = subprocess.run(base + ["--version"], capture_output=True, text=True, timeout=15)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().splitlines()[0]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -972,8 +1020,8 @@ class QueueManager:
         # --progress-template "[YTPROG] …" line on stdout (works on Windows,
         # where the default progress bar does not reach the pipe). Whichever
         # lands first wins; the template uses robust raw numeric fields.
-        cmd: list[str] = [
-            "yt-dlp",
+        cmd: list[str] = list(_ytdlp_base() or ["yt-dlp"])
+        cmd += [
             "--newline",
             "--no-colors",
             "--no-playlist",
@@ -1477,8 +1525,7 @@ def _fetch_entries(url: str, end: int) -> list[dict[str, Any]]:
     # because it never walks the continuation tokens past the first batch. Ask
     # for 1:end and slice client-side — yt-dlp keeps paginating until it hits
     # the upper bound, which is what we actually want.
-    cmd = [
-        "yt-dlp",
+    cmd = list(_ytdlp_base() or ["yt-dlp"]) + [
         "--flat-playlist",
         "--dump-json",
         "--no-warnings",
@@ -1519,7 +1566,7 @@ def scrape_channel(
     (capped) and paginates the filtered+sorted result, so search/sort apply
     across the entire channel rather than just the current page.
     """
-    if shutil.which("yt-dlp") is None:
+    if not _ytdlp_available():
         raise RuntimeError("yt-dlp is not installed or not on PATH")
     filters = filters or {}
     sort = sort if sort in SORT_ORDERS else "newest"
@@ -1611,10 +1658,10 @@ def search_channels(query: str, limit: int = 6) -> list[dict[str, Any]]:
     """Find candidate channels by plain-text name via a small video search,
     deduped by channel. yt-dlp has no dedicated channel-search, so we mine the
     channel fields off a `ytsearch` of videos."""
-    if shutil.which("yt-dlp") is None:
+    if not _ytdlp_available():
         raise RuntimeError("yt-dlp is not installed or not on PATH")
-    cmd = [
-        "yt-dlp", "--flat-playlist", "--dump-json", "--no-warnings",
+    cmd = list(_ytdlp_base() or ["yt-dlp"]) + [
+        "--flat-playlist", "--dump-json", "--no-warnings",
         "--ignore-no-formats-error",
         f"ytsearch{max(limit * 4, 12)}:{query}",
     ]
@@ -1677,9 +1724,11 @@ def health() -> Response:
         pass
     return jsonify({
         "ok": True,
-        "yt_dlp": shutil.which("yt-dlp") is not None,
+        "yt_dlp": _ytdlp_available(),
         "ffmpeg": shutil.which("ffmpeg") is not None,
-        "yt_dlp_version": _tool_version("yt-dlp"),
+        "yt_dlp_version": _ytdlp_version(),
+        # "module" streams progress reliably; "binary" can buffer on Windows.
+        "yt_dlp_source": "module" if _ytdlp_is_module() else ("binary" if _ytdlp_available() else None),
         "ffmpeg_version": (_tool_version("ffmpeg") or "").replace("ffmpeg version ", "")[:24] or None,
         "download_dir": str(dl_dir),
         "disk_free": free,
@@ -1753,10 +1802,15 @@ def api_scrape() -> Response:
 
 @app.route("/api/tools/update-ytdlp", methods=["POST"])
 def api_update_ytdlp() -> Response:
-    if shutil.which("yt-dlp") is None:
-        return jsonify({"error": "yt-dlp is not on PATH"}), 400
+    if not _ytdlp_available():
+        return jsonify({"error": "yt-dlp is not installed"}), 400
+    # A module install updates via pip; the standalone binary self-updates.
+    if _ytdlp_is_module():
+        cmd = [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"]
+    else:
+        cmd = list(_ytdlp_base()) + ["-U"]
     try:
-        proc = subprocess.run(["yt-dlp", "-U"], capture_output=True, text=True, timeout=180)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
     except subprocess.TimeoutExpired:
         return jsonify({"error": "yt-dlp update timed out"}), 504
     except OSError as exc:
@@ -1765,7 +1819,7 @@ def api_update_ytdlp() -> Response:
     return jsonify({
         "ok": proc.returncode == 0,
         "output": output[-2000:],
-        "version": _tool_version("yt-dlp"),
+        "version": _ytdlp_version(),
     })
 
 
@@ -1981,8 +2035,16 @@ def api_events() -> Response:
 def main() -> None:
     host = os.environ.get("YTARCHIVE_HOST", "127.0.0.1")
     port = int(os.environ.get("YTARCHIVE_PORT", "8765"))
-    print(f"\nYTArchive bridge → http://{host}:{port}")
+    print(f"\nCura bridge →     http://{host}:{port}")
     print(f"State file:       {STATE_FILE}")
+    base = _ytdlp_base()
+    if base is None:
+        print("yt-dlp:           NOT FOUND — install it (pip install yt-dlp)")
+    elif _ytdlp_is_module():
+        print(f"yt-dlp:           python -m yt_dlp ({_ytdlp_version() or '?'}) — progress streams")
+    else:
+        print(f"yt-dlp:           {base[0]} ({_ytdlp_version() or '?'}) — standalone binary; "
+              "progress may buffer on Windows. `pip install yt-dlp` for live progress.")
     if DEBUG:
         print(f"Debug logs:       {DOWNLOAD_LOG_DIR}  (raw yt-dlp output, timestamped)")
     print()

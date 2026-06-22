@@ -249,20 +249,36 @@ body {
 }
 .masthead-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
 }
 .masthead-top .eyebrow { margin: 0; }
+.masthead-right { margin-top: 0.35rem; }
 
+.brand-block { min-width: 0; }
 .brand {
   font-family: var(--serif);
   font-weight: 400;
-  font-size: 2.75rem;
+  font-size: 3rem;
   line-height: 1;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   color: var(--cream);
   margin: 0;
+}
+.brand-dot { color: var(--amber); }
+.brand-tag {
+  margin: 0.5rem 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 0.9375rem;
+  color: var(--text-mute);
+  letter-spacing: 0.01em;
+}
+.brand-tag em { font-style: italic; color: var(--text-body); }
+@media (max-width: 560px) {
+  .brand { font-size: 2.4rem; }
+  .brand-tag { font-size: 0.8125rem; }
 }
 
 /* round icon button (gear, etc.) in the masthead */
@@ -1117,6 +1133,32 @@ input[list]::-webkit-calendar-picker-indicator {
   width: 38px;
   justify-content: center;
 }
+/* compact icon+label buttons (queue all / unqueue all) */
+.btn-compact {
+  padding: 0.5rem 0.8rem;
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  gap: 0.4rem;
+}
+.btn-compact svg { opacity: 0.85; }
+
+/* date inputs need room so the native calendar picker doesn't sit on the text */
+.filter-field-date { grid-column: 1 / -1; }
+.range-pair input[type="date"] {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.55rem;
+  color-scheme: dark;
+}
+[data-theme="light"] .range-pair input[type="date"] { color-scheme: light; }
+.range-pair input[type="date"]::-webkit-calendar-picker-indicator {
+  margin-left: 0.25rem;
+  opacity: 0.5;
+  cursor: pointer;
+  filter: var(--cal-filter, none);
+}
+:root { --cal-filter: invert(0.85); }
+[data-theme="light"] { --cal-filter: none; }
 
 /* --- SponsorBlock mode toggle ------------------------------------------- */
 
