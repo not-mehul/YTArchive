@@ -86,7 +86,7 @@ class ScrapePaginationTests(unittest.TestCase):
         with mock.patch.object(server.shutil, "which", return_value="yt-dlp"), \
                 mock.patch.object(server.subprocess, "run", side_effect=self._fake_run):
             page1 = server.scrape_channel("http://chan", 1, 50, ignore_shorts=False)
-            page2 = server.scrape_channel("http://chan", 51, 100, ignore_shorts=False)
+            page2 = server.scrape_channel("http://chan", 2, 50, ignore_shorts=False)
         self.assertEqual(page1["videos"][0]["video_id"], "v1")
         self.assertEqual(page2["videos"][0]["video_id"], "v51")
         self.assertEqual(page1["page_entries"], 50)
@@ -108,6 +108,94 @@ class ScrapePaginationTests(unittest.TestCase):
             server.scrape_channel("http://chan", 1, 50, ignore_shorts=False)
         # Second call for the same/shallower window is served from cache.
         self.assertEqual(run.call_count, 1)
+
+    def test_title_filter_spans_whole_channel(self):
+        with mock.patch.object(server.shutil, "which", return_value="yt-dlp"), \
+                mock.patch.object(server.subprocess, "run", side_effect=self._fake_run):
+            page = server.scrape_channel(
+                "http://chan", 1, 50, ignore_shorts=False,
+                filters={"query": "Title 11"})
+        self.assertTrue(page["filtered"])
+        # "Title 11" and "Title 110"..."Title 119" match across the channel.
+        titles = [v["title"] for v in page["videos"]]
+        self.assertIn("Title 11", titles)
+        self.assertTrue(all("Title 11" in t for t in titles))
+
+    def test_sort_oldest_reverses(self):
+        with mock.patch.object(server.shutil, "which", return_value="yt-dlp"), \
+                mock.patch.object(server.subprocess, "run", side_effect=self._fake_run):
+            page = server.scrape_channel(
+                "http://chan", 1, 50, ignore_shorts=True, sort="oldest")
+        # Oldest-first → the highest-numbered non-short comes first.
+        self.assertEqual(page["videos"][0]["video_id"], "v119")
+
+
+class BuildCommandTests(unittest.TestCase):
+    def _item(self, **kw):
+        base = dict(id="x", video_id="v", url="https://www.youtube.com/watch?v=v",
+                    title="t", thumbnail=None, duration=None, quality="1080p",
+                    sponsorblock=["sponsor"])
+        base.update(kw)
+        return server.QueueItem(**base)
+
+    def test_sponsorblock_remove_is_default(self):
+        cmd = server.manager._build_command(self._item())
+        self.assertIn("--sponsorblock-remove", cmd)
+        self.assertNotIn("--sponsorblock-mark", cmd)
+
+    def test_sponsorblock_mark_mode(self):
+        cmd = server.manager._build_command(self._item(sponsorblock_mode="mark"))
+        self.assertIn("--sponsorblock-mark", cmd)
+        self.assertNotIn("--sponsorblock-remove", cmd)
+        self.assertIn("--embed-chapters", cmd)  # marking needs chapters
+
+    def test_subtitles_embedded_when_enabled(self):
+        server.manager._subtitles = True
+        server.manager._subtitle_embed = True
+        try:
+            cmd = server.manager._build_command(self._item(quality="1080p"))
+        finally:
+            server.manager._subtitles = False
+        self.assertIn("--write-subs", cmd)
+        self.assertIn("--embed-subs", cmd)
+
+    def test_no_subtitles_for_audio_preset(self):
+        server.manager._subtitles = True
+        try:
+            cmd = server.manager._build_command(self._item(quality="mp3"))
+        finally:
+            server.manager._subtitles = False
+        self.assertNotIn("--write-subs", cmd)
+
+
+class ValidateSourceTests(unittest.TestCase):
+    def test_handle(self):
+        self.assertEqual(server.validate_source("@veritasium"),
+                         ("url", "https://www.youtube.com/@veritasium"))
+
+    def test_bare_host_gets_scheme(self):
+        kind, val = server.validate_source("youtube.com/@x")
+        self.assertEqual(kind, "url")
+        self.assertTrue(val.startswith("https://"))
+
+    def test_plain_text_is_query(self):
+        self.assertEqual(server.validate_source("veritasium science"), ("query", "veritasium science"))
+
+    def test_empty_raises(self):
+        with self.assertRaises(ValueError):
+            server.validate_source("   ")
+
+
+class ByteHelperTests(unittest.TestCase):
+    def test_parse_size(self):
+        self.assertEqual(server._parse_size_str("10.00MiB"), 10 * 1024 * 1024)
+        self.assertIsNone(server._parse_size_str(None))
+
+    def test_parse_speed(self):
+        self.assertAlmostEqual(server._parse_speed_str("1.00MiB/s"), 1024 * 1024)
+
+    def test_human_bytes(self):
+        self.assertEqual(server._human_bytes(1536), "1.5 KiB")
 
 
 class BroadcastEvictionTests(unittest.TestCase):

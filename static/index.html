@@ -37,6 +37,10 @@
     <header class="masthead">
       <div class="masthead-top">
         <p class="eyebrow">YTArchive · v1</p>
+        <div class="masthead-right">
+          <span class="conn-pill" id="conn-pill" data-state="connecting" title="Live connection to the bridge">
+            <span class="conn-dot"></span><span class="conn-label">connecting…</span>
+          </span>
         <button
           type="button"
           id="theme-toggle"
@@ -50,7 +54,9 @@
           <svg class="theme-ic theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
           <span class="theme-knob" aria-hidden="true"></span>
         </button>
+        </div>
       </div>
+      <div class="disk-banner" id="disk-banner" hidden></div>
       <h1 class="display">
         A reading-room for <em>channel archival</em>.
       </h1>
@@ -72,7 +78,7 @@
           type="text"
           spellcheck="false"
           list="channel-history"
-          placeholder="https://www.youtube.com/@channel  ·  or any playlist URL"
+          placeholder="URL, @handle, or a channel name to search…"
         />
         <datalist id="channel-history"></datalist>
         <button type="submit" class="btn btn-primary" id="scrape-btn">
@@ -80,6 +86,7 @@
           Fetch
         </button>
       </form>
+      <div class="channel-results" id="channel-results" hidden></div>
       <div class="source-options">
         <label class="check" for="ignore-shorts">
           <input type="checkbox" id="ignore-shorts" checked />
@@ -91,8 +98,9 @@
         <span class="source-options-hint" id="shorts-skip-note"></span>
       </div>
       <p class="hint" id="scrape-hint">
-        Videos load in pages of 50. Walk a long channel with the arrows
-        instead of pulling thousands of thumbnails at once.
+        Paste a channel/playlist URL or an <span class="mono">@handle</span>, or
+        type a name to search. Videos load in pages of 50; filters &amp; sort
+        apply across the whole channel.
       </p>
     </section>
 
@@ -141,9 +149,50 @@
           id="grid-filter"
           type="text"
           spellcheck="false"
-          placeholder="Filter this page · title contains…"
+          placeholder="Search titles across the whole channel…"
         />
+        <select id="sort-select" aria-label="Sort order">
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="longest">Longest</option>
+          <option value="shortest">Shortest</option>
+          <option value="most_viewed">Most viewed</option>
+          <option value="least_viewed">Least viewed</option>
+        </select>
+        <button type="button" class="btn btn-ghost" id="toggle-filters">Filters</button>
         <span class="filter-count mono" id="filter-count"></span>
+      </div>
+      <div class="advanced-filters" id="advanced-filters" hidden>
+        <div class="filter-field">
+          <span class="label">Duration (sec)</span>
+          <div class="range-pair">
+            <input id="f-dur-min" type="number" min="0" step="1" placeholder="min" />
+            <input id="f-dur-max" type="number" min="0" step="1" placeholder="max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <span class="label">Views</span>
+          <div class="range-pair">
+            <input id="f-views-min" type="number" min="0" step="1" placeholder="min" />
+            <input id="f-views-max" type="number" min="0" step="1" placeholder="max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <span class="label">Upload date</span>
+          <div class="range-pair">
+            <input id="f-date-from" type="date" />
+            <input id="f-date-to" type="date" />
+          </div>
+        </div>
+        <div class="filter-actions">
+          <button type="button" class="btn btn-ghost" id="apply-filters">Apply</button>
+          <button type="button" class="btn btn-ghost" id="reset-filters">Reset</button>
+        </div>
+        <p class="hint" id="filter-note">
+          Filters run across the whole channel. Duration/view/date filters
+          apply only where YouTube exposes that metadata (often absent in the
+          fast channel listing); titles always match.
+        </p>
       </div>
       <div class="video-grid" id="video-grid"></div>
       <div class="grid-empty" id="grid-empty" hidden>
@@ -159,14 +208,18 @@
 
       <div class="config-grid">
         <div class="panel">
-          <p class="label">SponsorBlock · segments to remove</p>
+          <p class="label">SponsorBlock · segments</p>
           <div class="check-grid" id="sb-grid">
             <!-- populated by JS -->
           </div>
+          <div class="seg sb-mode-seg" role="radiogroup" aria-label="SponsorBlock action" id="sb-mode-seg">
+            <button type="button" role="radio" data-mode="remove" class="active">Remove</button>
+            <button type="button" role="radio" data-mode="mark">Mark as chapters</button>
+          </div>
           <p class="hint">
-            <em>Algorithm.</em> Segments are looked up in the public
-            SponsorBlock database, then trimmed from the muxed file by
-            ffmpeg's chapter editor. Chapter timestamps shift to match.
+            <em>Remove</em> (default) cuts the segments out — chapters and
+            embedded subtitles shift to match. <em>Mark</em> keeps the full
+            video and labels the segments as skippable chapters instead.
           </p>
         </div>
 
@@ -206,6 +259,36 @@
             <em>Plex &amp; Jellyfin.</em> Writes title, uploader, thumbnail,
             and chapter markers into the file so libraries pick them up
             without sidecars.
+          </p>
+        </div>
+
+        <div class="panel">
+          <p class="label">Subtitles &amp; captions</p>
+          <label class="check" for="subs-enabled">
+            <input type="checkbox" id="subs-enabled" />
+            <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+            Download subtitles
+          </label>
+          <div class="concurrency-row">
+            <label for="subs-langs" class="concurrency-label">Languages</label>
+            <input id="subs-langs" type="text" spellcheck="false" placeholder="en, en-US, es" />
+          </div>
+          <div class="check-grid" id="subs-grid">
+            <label class="check" for="subs-auto">
+              <input type="checkbox" id="subs-auto" />
+              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+              Auto-generated
+            </label>
+            <label class="check" for="subs-embed">
+              <input type="checkbox" id="subs-embed" checked />
+              <span class="box"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>
+              Embed in file
+            </label>
+          </div>
+          <p class="hint">
+            <em>Sync.</em> Embedding cuts captions in step with SponsorBlock
+            removal, so they stay aligned. Sidecar <span class="mono">.srt</span>
+            files are not re-timed when segments are cut. Video presets only.
           </p>
         </div>
 
@@ -266,6 +349,13 @@
         </form>
       </div>
       <p class="hint" id="env-hint"></p>
+      <div class="engine-strip">
+        <span class="engine-tool" id="engine-ytdlp">yt-dlp <span class="mono" id="ytdlp-ver">—</span></span>
+        <button type="button" class="btn btn-ghost btn-mini" id="update-ytdlp">Update yt-dlp</button>
+        <span class="engine-tool" id="engine-ffmpeg">ffmpeg <span class="mono" id="ffmpeg-ver">—</span></span>
+        <span class="spacer"></span>
+        <span class="engine-tool mono" id="disk-readout"></span>
+      </div>
     </section>
 
     <section class="section queue-section" aria-labelledby="q-title">
@@ -288,6 +378,13 @@
           <button class="btn btn-ghost" id="q-clear" type="button">Clear finished</button>
         </div>
       </div>
+      <div class="queue-stats" id="queue-stats" hidden>
+        <span class="qstat"><span class="qstat-k">Remaining</span><span class="qstat-v mono" id="stat-remaining">0</span></span>
+        <span class="qstat"><span class="qstat-k">Done</span><span class="qstat-v mono" id="stat-done">0</span></span>
+        <span class="qstat"><span class="qstat-k">Speed</span><span class="qstat-v mono" id="stat-speed">—</span></span>
+        <span class="qstat"><span class="qstat-k">Archived</span><span class="qstat-v mono" id="stat-size">0 B</span></span>
+        <span class="qstat"><span class="qstat-k">ETA</span><span class="qstat-v mono" id="stat-eta">—</span></span>
+      </div>
       <div class="queue-list" id="queue-list">
         <p class="muted queue-empty" id="queue-empty">
           Nothing queued. Add videos from the grid above to populate.
@@ -304,6 +401,18 @@
       </p>
     </footer>
   </main>
+
+  <div class="modal-overlay" id="log-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="log-modal-title">
+      <div class="modal-head">
+        <h3 id="log-modal-title">Log</h3>
+        <button type="button" class="modal-close" id="log-modal-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <pre class="modal-log mono" id="log-modal-body"></pre>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
