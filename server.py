@@ -1,8 +1,9 @@
-"""YTArchive bridge server.
+"""Chive bridge server.
 
-A local Flask server that drives yt-dlp for channel scraping and
-SponsorBlock-aware downloads. The single-page UI in `static/index.html`
-talks to this server over JSON + Server-Sent Events.
+Chive (ar·chive) — a local Flask server that drives yt-dlp for channel
+scraping and SponsorBlock-aware downloads: snip the fluff, keep the good
+stuff. The single-page UI in `static/index.html` talks to this server over
+JSON + Server-Sent Events.
 """
 
 from __future__ import annotations
@@ -2007,7 +2008,7 @@ def api_events() -> Response:
 def main() -> None:
     host = os.environ.get("YTARCHIVE_HOST", "127.0.0.1")
     port = int(os.environ.get("YTARCHIVE_PORT", "8765"))
-    print(f"\nCura bridge →     http://{host}:{port}")
+    print(f"\nChive bridge →    http://{host}:{port}")
     print(f"State file:       {STATE_FILE}")
     if _ytdlp_runner_cmd() is not None:
         print(f"yt-dlp:           API runner ({_ytdlp_version() or '?'}) — progress streams")
@@ -2033,7 +2034,7 @@ def main() -> None:
         return
     # `threads` caps concurrent workers; each open SSE connection holds one for
     # its lifetime, so allow plenty of headroom for multiple tabs + requests.
-    serve(app, host=host, port=port, threads=16, channel_timeout=300, ident="Cura")
+    serve(app, host=host, port=port, threads=16, channel_timeout=300, ident="Chive")
 
 
 if __name__ == "__main__":

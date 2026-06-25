@@ -1,4 +1,6 @@
-# YTArchive
+# Chive 🌱
+
+**ar·chive** — snip the fluff, keep the good stuff.
 
 A local web app for archiving YouTube channels with SponsorBlock segments cut
 out automatically. Built as a three-tier system:
