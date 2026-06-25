@@ -802,6 +802,7 @@ function renderQueue() {
 
   list.querySelectorAll(".qitem").forEach((n) => n.remove());
   if (!state.queue.length) {
+    if (empty.hidden !== false) freshEmptyLine();
     empty.hidden = false;
     return;
   }
@@ -1481,6 +1482,84 @@ function bind() {
   if (themeToggle) themeToggle.addEventListener("click", toggleTheme);
 }
 
+// ---------- easter eggs 🌱 ----------
+
+// A little purple-pompom confetti, as if a chive flower went to seed.
+function blossomBurst(n = 28) {
+  const layer = el("div", { class: "blossom-layer", "aria-hidden": "true" });
+  document.body.appendChild(layer);
+  const glyphs = ["✿", "❀", "•", "✺", "🌱"];
+  for (let i = 0; i < n; i++) {
+    const p = el("span", { class: "blossom" }, glyphs[(Math.random() * glyphs.length) | 0]);
+    p.style.left = Math.random() * 100 + "vw";
+    p.style.animationDelay = Math.random() * 0.5 + "s";
+    p.style.animationDuration = 2.4 + Math.random() * 1.8 + "s";
+    p.style.fontSize = 0.7 + Math.random() * 1.1 + "rem";
+    p.style.setProperty("--drift", (Math.random() * 2 - 1) * 140 + "px");
+    layer.appendChild(p);
+  }
+  setTimeout(() => layer.remove(), 4800);
+}
+
+function initEasterEggs() {
+  // 1. A hello in the console for the curious.
+  try {
+    console.log(
+      "%c🌱 Chive %c— ar·chive everything, snip the fluff.",
+      "font-weight:bold;color:#a7d65a",
+      "color:#9a8",
+    );
+    console.log("%cpsst — try the Konami code: ↑ ↑ ↓ ↓ ← → ← → b a", "color:#c9a8e0;font-style:italic");
+  } catch (e) { /* no console */ }
+
+  // 2. Konami code → a secret garden of blossoms.
+  const KONAMI = ["ArrowUp","ArrowUp","ArrowDown","ArrowDown","ArrowLeft","ArrowRight","ArrowLeft","ArrowRight","b","a"];
+  let progress = 0;
+  window.addEventListener("keydown", (e) => {
+    // Don't hijack typing in inputs.
+    const tag = (e.target && e.target.tagName) || "";
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    progress = key === KONAMI[progress] ? progress + 1 : (key === KONAMI[0] ? 1 : 0);
+    if (progress === KONAMI.length) {
+      progress = 0;
+      blossomBurst(60);
+      toast("🌿 Secret garden unlocked — go on, archive something lovely.");
+    }
+  });
+
+  // 3. Click the wordmark → it blooms; keep clicking for a treat.
+  const brand = $("#brand");
+  if (brand) {
+    let taps = 0, tapTimer = null;
+    brand.addEventListener("click", () => {
+      brand.classList.remove("bloom");
+      void brand.offsetWidth;            // restart the animation
+      brand.classList.add("bloom");
+      taps++;
+      clearTimeout(tapTimer);
+      tapTimer = setTimeout(() => { taps = 0; }, 1200);
+      if (taps >= 5) {
+        taps = 0;
+        blossomBurst(40);
+        toast("🌱 you grew a whole chive. impressive.");
+      }
+    });
+  }
+}
+
+// Playful lines for the empty queue — one is picked at random each time it empties.
+const EMPTY_LINES = [
+  "Nothing queued yet. Click a thumbnail above to plant one.",
+  "An empty plot. Click a thumbnail above to start archiving.",
+  "Quiet in here. Pick a video above and it lands in the queue.",
+  "Nothing growing yet — click a thumbnail to queue it.",
+];
+function freshEmptyLine() {
+  const node = $("#queue-empty");
+  if (node) node.textContent = EMPTY_LINES[(Math.random() * EMPTY_LINES.length) | 0];
+}
+
 function init() {
   initTheme();
   renderSponsorBlock();
@@ -1490,6 +1569,8 @@ function init() {
   updateQualityHint();
   renderAdvancedPanel();
   bind();
+  initEasterEggs();
+  freshEmptyLine();
   loadSettings();
   connectEvents();
   // Re-check the toolchain so installing yt-dlp/ffmpeg mid-session clears the

@@ -13,7 +13,7 @@
   --surface-3: #0c0a08;
   --amber: #d4a574;
   --sage: #9fb3a0;
-  --amber-bright: #fcd34d;
+  --chive: #a7d65a;            /* the herb — Chive's focal accent */
   --cream: #f5ecd9;
   --text-high: #f5f5f4;
   --text: #e8e1d5;
@@ -32,7 +32,8 @@
   /* surfaces & component fills — every color routes through a token (§1.3) */
   --on-accent: #1c1917;
   --on-overlay: #f5ecd9;          /* light text on the always-dark thumb overlay */
-  --amber-bright-hover: #fef3c7;
+  --chive-hover: #c2e487;
+  --blossom: #c9a8e0;             /* chive flower — purple pompom, easter-egg accents */
   --panel-bg: rgba(20, 17, 14, 0.6);
   --panel-bg-faint: rgba(20, 17, 14, 0.4);
   --input-bg: rgba(12, 10, 8, 0.8);
@@ -43,6 +44,7 @@
 
   /* RGB triples for composable alpha (glows, halos) — flip with the theme */
   --amber-rgb: 212, 165, 116;
+  --chive-rgb: 167, 214, 90;
   --sage-rgb: 159, 179, 160;
   --cream-rgb: 245, 236, 217;
 
@@ -61,7 +63,7 @@
   /* accents deepened so they hold contrast against cream */
   --amber: #b07d3e;
   --sage: #6f8770;
-  --amber-bright: #e0a92a;
+  --chive: #6f9c34;               /* deepened so it holds contrast on cream */
   --cream: #211d17;               /* heading role inverts to a warm near-black */
   --text-high: #1c1917;
   --text: #2a2620;
@@ -79,7 +81,8 @@
 
   --on-accent: #1c1917;           /* bright accent stays light-ish → dark text */
   --on-overlay: #f5ecd9;          /* overlay chip is dark in both themes */
-  --amber-bright-hover: #c89320;
+  --chive-hover: #5e8a2b;
+  --blossom: #8e6bb0;
   --panel-bg: rgba(255, 251, 243, 0.7);
   --panel-bg-faint: rgba(255, 251, 243, 0.45);
   --input-bg: rgba(255, 252, 245, 0.9);
@@ -89,6 +92,7 @@
   --modal-bg: rgba(252, 248, 240, 0.98);
 
   --amber-rgb: 176, 125, 62;
+  --chive-rgb: 111, 156, 52;
   --sage-rgb: 111, 135, 112;
   --cream-rgb: 120, 95, 50;
 }
@@ -131,8 +135,8 @@ body {
 .glow-1 {
   top: -20%; right: -15%; width: 900px; height: 900px;
   background: radial-gradient(circle,
-    rgba(var(--amber-rgb), 0.10) 0%,
-    rgba(var(--amber-rgb), 0.03) 30%,
+    rgba(var(--chive-rgb), 0.11) 0%,
+    rgba(var(--chive-rgb), 0.03) 30%,
     transparent 60%);
   filter: blur(40px);
 }
@@ -265,8 +269,29 @@ body {
   letter-spacing: -0.02em;
   color: var(--cream);
   margin: 0;
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.1rem;
+  -webkit-tap-highlight-color: transparent;
 }
-.brand-dot { color: var(--amber); }
+.brand-sprig {
+  display: inline-flex;
+  margin-top: 0.15em;
+  transform-origin: bottom center;
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.brand:hover .brand-sprig { transform: rotate(-6deg) scale(1.08); }
+.brand-sprig .bud { transition: r 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), fill 0.3s; }
+/* easter egg: brand "blooms" — buds swell and the sprig gives a little wiggle */
+.brand.bloom .brand-sprig { animation: sprig-wiggle 0.6s ease; }
+.brand.bloom .brand-sprig .bud { r: 3.1; fill: var(--chive); }
+@keyframes sprig-wiggle {
+  0%, 100% { transform: rotate(0); }
+  25% { transform: rotate(-12deg) scale(1.15); }
+  60% { transform: rotate(8deg) scale(1.1); }
+}
 .brand-tag {
   margin: 0.5rem 0 0;
   font-family: var(--serif);
@@ -428,11 +453,11 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 .btn:disabled { cursor: not-allowed; }
 
 .btn-primary {
-  background: var(--amber-bright);
+  background: var(--chive);
   color: var(--on-accent);
-  box-shadow: 0 0 40px rgba(var(--amber-rgb), 0.25);
+  box-shadow: 0 0 40px rgba(var(--chive-rgb), 0.28);
 }
-.btn-primary:hover:not(:disabled) { background: var(--amber-bright-hover); }
+.btn-primary:hover:not(:disabled) { background: var(--chive-hover); }
 .btn-primary:disabled {
   background: var(--disabled-bg);
   color: var(--text-decor);
@@ -527,9 +552,9 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   outline-offset: 2px;
 }
 .video-card.selected {
-  border-color: var(--amber-bright);
+  border-color: var(--chive);
   background: var(--chip-bg);
-  box-shadow: 0 0 30px rgba(var(--amber-rgb), 0.15);
+  box-shadow: 0 0 30px rgba(var(--chive-rgb), 0.18);
 }
 .video-card.queued { opacity: 0.55; cursor: default; }
 
@@ -557,7 +582,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   top: 0.4rem; left: 0.4rem;
   width: 1.5rem; height: 1.5rem;
   border-radius: 50%;
-  background: var(--amber-bright);
+  background: var(--chive);
   color: var(--on-accent);
   display: none;
   align-items: center;
@@ -641,8 +666,8 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .check .box svg { opacity: 0; color: var(--on-accent); }
 .check input:checked + .box {
-  background: var(--amber-bright);
-  border-color: var(--amber-bright);
+  background: var(--chive);
+  border-color: var(--chive);
 }
 .check input:checked + .box svg { opacity: 1; }
 .check:hover .box { border-color: var(--text-mute); }
@@ -677,7 +702,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   outline-offset: -2px;
 }
 .seg button.active {
-  background: var(--amber-bright);
+  background: var(--chive);
   color: var(--on-accent);
 }
 
@@ -764,7 +789,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .qmeta .qstatus { display: inline-flex; align-items: center; gap: 0.35rem; }
 .qmeta .qstatus.pending { color: var(--text-mute); }
-.qmeta .qstatus.downloading { color: var(--amber-bright); }
+.qmeta .qstatus.downloading { color: var(--chive); }
 .qmeta .qstatus.completed { color: var(--sage); }
 .qmeta .qstatus.failed { color: var(--err-fg); }
 .qmeta .qstatus.cancelled { color: var(--text-decor); }
@@ -793,7 +818,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 .qprogress .bar {
   height: 100%;
   width: 0%;
-  background: var(--amber-bright);
+  background: var(--chive);
   transition: width 0.25s linear;
 }
 .qitem.completed .qprogress .bar { background: var(--sage); }
@@ -804,7 +829,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   background: linear-gradient(
     90deg,
     transparent 0%,
-    var(--amber-bright) 50%,
+    var(--chive) 50%,
     transparent 100%
   );
   animation: qprogress-sweep 1.4s ease-in-out infinite;
@@ -872,6 +897,35 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .toast.error { border-color: var(--err-fg); color: var(--err-fg); background: var(--err-bg); }
 .toast.notice { border-color: var(--notice-fg); color: var(--notice-fg); background: var(--notice-bg); }
+
+/* --- easter-egg blossom confetti 🌱 -------------------------------------- */
+
+.blossom-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 300;
+}
+.blossom {
+  position: absolute;
+  top: -4vh;
+  color: var(--blossom);
+  line-height: 1;
+  will-change: transform, opacity;
+  animation-name: blossom-fall;
+  animation-timing-function: cubic-bezier(0.4, 0.05, 0.55, 0.95);
+  animation-fill-mode: forwards;
+}
+@keyframes blossom-fall {
+  0%   { transform: translate(0, 0) rotate(0deg); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translate(var(--drift, 0), 112vh) rotate(560deg); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .blossom { animation: none; opacity: 0; }
+}
 
 /* --- grid filter / sort row --------------------------------------------- */
 
@@ -1077,7 +1131,7 @@ input[list]::-webkit-calendar-picker-indicator {
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
 }
-.channel-result:hover { border-color: var(--amber-bright); background: var(--chip-bg); }
+.channel-result:hover { border-color: var(--chive); background: var(--chip-bg); }
 .channel-result-name { font-family: var(--serif); font-size: 1rem; color: var(--text-strong); }
 .channel-result-url { font-size: 0.6875rem; color: var(--text-mute); word-break: break-all; }
 
@@ -1125,7 +1179,7 @@ input[list]::-webkit-calendar-picker-indicator {
 }
 .filter-footer #filter-note { margin: 0; flex: 1; min-width: 220px; }
 .filter-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
-#toggle-filters.active { border-color: var(--amber-bright); color: var(--text-high); }
+#toggle-filters.active { border-color: var(--chive); color: var(--text-high); }
 
 /* icon-only ghost buttons (page nav, clear, etc.) */
 .btn-icon {
