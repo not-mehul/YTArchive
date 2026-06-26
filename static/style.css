@@ -12,8 +12,8 @@
   --surface-2: #0f0d0b;
   --surface-3: #0c0a08;
   --amber: #d4a574;
-  --sage: #9fb3a0;
-  --chive: #a7d65a;            /* the herb — Chive's focal accent */
+  --sage: #93b58a;            /* muted sibling of --chive: the "done" green */
+  --chive: #84c95c;           /* the herb — refined fresh green, the focal accent */
   --cream: #f5ecd9;
   --text-high: #f5f5f4;
   --text: #e8e1d5;
@@ -32,8 +32,8 @@
   /* surfaces & component fills — every color routes through a token (§1.3) */
   --on-accent: #1c1917;
   --on-overlay: #f5ecd9;          /* light text on the always-dark thumb overlay */
-  --chive-hover: #c2e487;
-  --blossom: #c9a8e0;             /* chive flower — purple pompom, easter-egg accents */
+  --chive-hover: #9bd676;
+  --blossom: #c9a8e0;             /* chive flower — lavender; complementary focus + flourishes */
   --panel-bg: rgba(20, 17, 14, 0.6);
   --panel-bg-faint: rgba(20, 17, 14, 0.4);
   --input-bg: rgba(12, 10, 8, 0.8);
@@ -44,8 +44,8 @@
 
   /* RGB triples for composable alpha (glows, halos) — flip with the theme */
   --amber-rgb: 212, 165, 116;
-  --chive-rgb: 167, 214, 90;
-  --sage-rgb: 159, 179, 160;
+  --chive-rgb: 132, 201, 92;
+  --sage-rgb: 147, 181, 138;
   --cream-rgb: 245, 236, 217;
 
   --serif: "Fraunces", "Iowan Old Style", "Apple Garamond", Baskerville, Georgia, "Times New Roman", serif;
@@ -62,8 +62,8 @@
   --surface-3: #e9dfce;
   /* accents deepened so they hold contrast against cream */
   --amber: #b07d3e;
-  --sage: #6f8770;
-  --chive: #6f9c34;               /* deepened so it holds contrast on cream */
+  --sage: #6f8a54;                /* muted sibling of --chive on cream */
+  --chive: #629633;               /* deepened so it holds contrast on cream */
   --cream: #211d17;               /* heading role inverts to a warm near-black */
   --text-high: #1c1917;
   --text: #2a2620;
@@ -81,7 +81,7 @@
 
   --on-accent: #1c1917;           /* bright accent stays light-ish → dark text */
   --on-overlay: #f5ecd9;          /* overlay chip is dark in both themes */
-  --chive-hover: #5e8a2b;
+  --chive-hover: #527f29;
   --blossom: #8e6bb0;
   --panel-bg: rgba(255, 251, 243, 0.7);
   --panel-bg-faint: rgba(255, 251, 243, 0.45);
@@ -92,8 +92,8 @@
   --modal-bg: rgba(252, 248, 240, 0.98);
 
   --amber-rgb: 176, 125, 62;
-  --chive-rgb: 111, 156, 52;
-  --sage-rgb: 111, 135, 112;
+  --chive-rgb: 98, 150, 51;
+  --sage-rgb: 111, 138, 84;
   --cream-rgb: 120, 95, 50;
 }
 
@@ -323,7 +323,10 @@ body {
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .icon-btn:hover { border-color: var(--text-mute); color: var(--text-high); }
-.icon-btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.icon-btn:focus-visible { outline: 2px solid var(--blossom); outline-offset: 2px; }
+/* the settings gear gives a little turn on hover — playful, not noisy */
+#settings-btn svg { transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.5, 1); }
+#settings-btn:hover svg { transform: rotate(50deg); }
 
 /* --- theme toggle (Dusk ⇄ Dawn) — §8.9 ----------------------------------- */
 
@@ -342,7 +345,7 @@ body {
 }
 .theme-toggle:hover { border-color: var(--text-mute); }
 .theme-toggle:focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--blossom);
   outline-offset: 2px;
 }
 .theme-toggle .theme-ic {
@@ -447,10 +450,12 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.12s;
   white-space: nowrap;
 }
 .btn:disabled { cursor: not-allowed; }
+.btn-primary:hover:not(:disabled) { transform: translateY(-1px); }
+.btn-primary:active:not(:disabled) { transform: translateY(0); }
 
 .btn-primary {
   background: var(--chive);
@@ -548,7 +553,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .video-card:hover { border-color: var(--text-mute); }
 .video-card:focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--blossom);
   outline-offset: 2px;
 }
 .video-card.selected {
@@ -557,6 +562,30 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   box-shadow: 0 0 30px rgba(var(--chive-rgb), 0.18);
 }
 .video-card.queued { opacity: 0.55; cursor: default; }
+
+/* already in the library — locked out of the queue */
+.video-card.downloaded {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+.video-card.downloaded:hover { border-color: var(--border-soft); }
+.video-card.downloaded .thumb-wrap img { filter: grayscale(0.7) brightness(0.82); }
+.dl-badge {
+  position: absolute;
+  top: 0.4rem; left: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: var(--sans);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--on-accent);
+  background: var(--sage);
+  padding: 0.18rem 0.4rem 0.18rem 0.32rem;
+  border-radius: 2px;
+}
 
 .thumb-wrap {
   position: relative;
@@ -698,7 +727,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
 }
 .seg button:hover { background: var(--hover-bg); color: var(--text-high); }
 .seg button:focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--blossom);
   outline-offset: -2px;
 }
 .seg button.active {
@@ -754,7 +783,7 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   padding: 0.75rem;
   align-items: center;
 }
-.qitem.downloading { border-color: var(--amber); }
+.qitem.downloading { border-color: var(--chive); }
 .qitem.completed { border-color: var(--sage); }
 .qitem.failed { border-color: var(--err-fg); }
 .qitem.paused { border-color: var(--text-decor); }

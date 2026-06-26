@@ -129,6 +129,10 @@ DISK_SOFT_WARN = 2 * 1024 * 1024 * 1024  # surface a UI warning below this
 # Per-item rolling log capacity (lines). Session-only; never persisted.
 LOG_MAX_LINES = 600
 
+# Matches the 11-char video id our output template embeds as "[<id>]" — used to
+# detect already-downloaded videos by scanning the destination tree.
+_DL_ID_RE = re.compile(r"\[([0-9A-Za-z_-]{11})\]")
+
 # yt-dlp supports cookies via --cookies-from-browser. Whitelist the values it
 # accepts so the UI can offer a closed dropdown rather than free text.
 COOKIE_BROWSERS = (
@@ -298,6 +302,8 @@ class QueueManager:
         self._last_sb_mode: str = "remove"
         # Session-only per-item yt-dlp output, for the log viewer. Never persisted.
         self._logs: dict[str, deque[str]] = {}
+        # Cached scan of the destination for already-downloaded video ids.
+        self._dl_scan: dict[str, Any] | None = None
         self._persist_dirty = False
         self._load_persisted()
         self._dispatcher = threading.Thread(target=self._dispatch_loop, daemon=True)
@@ -717,6 +723,53 @@ class QueueManager:
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return [asdict(self._items[i]) for i in self._order]
+
+    # ----- already-downloaded detection -------------------------------
+
+    def downloaded_ids(self) -> set[str]:
+        """Video ids already archived locally — from completed queue items, the
+        yt-dlp download archive, and a cached scan of the destination tree for
+        `[<id>]` filenames (our output template embeds the id)."""
+        ids: set[str] = set()
+        with self._lock:
+            for it in self._items.values():
+                if it.status == "completed" and it.video_id:
+                    ids.add(it.video_id)
+            dl_dir = self._download_dir
+        archive = dl_dir / "archive.txt"
+        try:
+            if archive.is_file():
+                for line in archive.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    tok = line.split()
+                    if tok:
+                        ids.add(tok[-1])
+        except OSError:
+            pass
+        ids |= self._scan_disk_ids(dl_dir)
+        return ids
+
+    def _scan_disk_ids(self, dl_dir: Path) -> set[str]:
+        now = time.time()
+        with self._lock:
+            c = self._dl_scan
+            if c and c["dir"] == str(dl_dir) and (now - c["ts"]) < 30:
+                return c["ids"]
+        ids: set[str] = set()
+        try:
+            for p in dl_dir.rglob("*"):
+                # Skip in-progress artifacts so a half-finished download isn't
+                # mistaken for an archived one.
+                if p.suffix.lower() in (".part", ".ytdl", ".temp"):
+                    continue
+                if p.is_file():
+                    m = _DL_ID_RE.search(p.name)
+                    if m:
+                        ids.add(m.group(1))
+        except OSError:
+            pass
+        with self._lock:
+            self._dl_scan = {"dir": str(dl_dir), "ts": now, "ids": ids}
+        return ids
 
     # ----- per-item logs ----------------------------------------------
 
@@ -1768,6 +1821,10 @@ def api_scrape() -> Response:
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     result["resolved_url"] = url
+    # Flag videos already archived locally so the UI can gray them out.
+    downloaded = manager.downloaded_ids()
+    for v in result.get("videos", []):
+        v["downloaded"] = v.get("video_id") in downloaded
     if page == 1:
         manager.push_history(url)
     return jsonify(result)

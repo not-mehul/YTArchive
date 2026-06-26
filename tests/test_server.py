@@ -161,6 +161,27 @@ class ValidateSourceTests(unittest.TestCase):
             server.validate_source("   ")
 
 
+class DownloadedIdsTests(unittest.TestCase):
+    def test_detects_disk_and_archive_ignores_part(self):
+        import pathlib
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "Uploader").mkdir()
+        (d / "Uploader" / "A Video [abcDEF12345].mp4").write_text("x")
+        (d / "Uploader" / "Half [zzzZZZ99999].mp4.part").write_text("x")
+        (d / "archive.txt").write_text("youtube arch1234567\n")
+        prev = server.manager._download_dir
+        server.manager._download_dir = d
+        server.manager._dl_scan = None
+        try:
+            ids = server.manager.downloaded_ids()
+        finally:
+            server.manager._download_dir = prev
+            server.manager._dl_scan = None
+        self.assertIn("abcDEF12345", ids)       # on disk
+        self.assertIn("arch1234567", ids)        # in archive.txt
+        self.assertNotIn("zzzZZZ99999", ids)     # .part is in-progress, ignored
+
+
 class ByteHelperTests(unittest.TestCase):
     def test_human_bytes(self):
         self.assertEqual(server._human_bytes(1536), "1.5 KiB")
