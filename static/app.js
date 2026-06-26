@@ -412,21 +412,28 @@ function renderGrid() {
   $("#grid-empty").hidden = true;
   for (const v of items) {
     const queued = state.queuedIds.has(v.video_id);
+    // Already on disk (and not currently in the queue) → locked out.
+    const downloaded = !!v.downloaded && !queued;
     const card = el("article", {
-      class: `video-card${queued ? " selected" : ""}`,
+      class: `video-card${queued ? " selected" : ""}${downloaded ? " downloaded" : ""}`,
       "data-id": v.video_id,
       role: "button",
-      tabindex: "0",
+      tabindex: downloaded ? "-1" : "0",
       "aria-pressed": queued ? "true" : "false",
-      "aria-label": `${queued ? "Queued: " : "Queue "}${v.title || v.video_id}`,
+      "aria-disabled": downloaded ? "true" : "false",
+      "aria-label": downloaded
+        ? `Already downloaded: ${v.title || v.video_id}`
+        : `${queued ? "Queued: " : "Queue "}${v.title || v.video_id}`,
     });
-    card.addEventListener("click", () => toggleCard(v.video_id));
-    card.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        toggleCard(v.video_id);
-      }
-    });
+    if (!downloaded) {
+      card.addEventListener("click", () => toggleCard(v.video_id));
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleCard(v.video_id);
+        }
+      });
+    }
     const thumb = el("div", { class: "thumb-wrap" });
     if (v.thumbnail) {
       thumb.appendChild(el("img", { src: v.thumbnail, alt: "", loading: "lazy" }));
@@ -437,12 +444,17 @@ function renderGrid() {
     const mark = el("span", { class: "thumb-mark" });
     mark.appendChild(svgEl(`<path d="m5 12 5 5L20 7"/>`, 14));
     thumb.appendChild(mark);
+    if (downloaded) {
+      thumb.appendChild(el("span", { class: "dl-badge" }, [
+        svgEl(`<path d="m5 12 5 5L20 7"/>`, 12), "In library",
+      ]));
+    }
 
     const body = el("div", { class: "card-body" }, [
       el("h3", { class: "card-title" }, v.title),
       el("div", { class: "card-meta" }, [
         v.upload_date ? fmtDate(v.upload_date) : "",
-        queued ? "· queued" : (v.view_count ? `· ${fmtViews(v.view_count)} views` : ""),
+        downloaded ? "· downloaded" : (queued ? "· queued" : (v.view_count ? `· ${fmtViews(v.view_count)} views` : "")),
       ].filter(Boolean).join(" ")),
     ]);
     card.appendChild(thumb);
@@ -484,8 +496,8 @@ function markCard(videoId, on) {
 }
 
 async function selectPage() {
-  const toAdd = visibleVideos().filter((v) => !state.queuedIds.has(v.video_id));
-  if (!toAdd.length) { toast("Everything on this page is already queued.", "notice"); return; }
+  const toAdd = visibleVideos().filter((v) => !state.queuedIds.has(v.video_id) && !v.downloaded);
+  if (!toAdd.length) { toast("Nothing new to queue on this page.", "notice"); return; }
   for (const v of toAdd) { state.queuedIds.add(v.video_id); markCard(v.video_id, true); }
   updateSelectedCount();
   try {
