@@ -366,7 +366,7 @@ body {
   width: 24px;
   height: 24px;
   border-radius: 2px;
-  background: var(--amber);
+  background: var(--blossom);
   z-index: 1;
   transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -1163,6 +1163,53 @@ input[list]::-webkit-calendar-picker-indicator {
 .channel-result:hover { border-color: var(--chive); background: var(--chip-bg); }
 .channel-result-name { font-family: var(--serif); font-size: 1rem; color: var(--text-strong); }
 .channel-result-url { font-size: 0.6875rem; color: var(--text-mute); word-break: break-all; }
+
+/* podcast show results — artwork + meta */
+.podcast-result { flex-direction: row; align-items: center; gap: 0.8rem; }
+.pod-art {
+  width: 52px; height: 52px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--surface-3);
+}
+.pod-art-blank { display: inline-block; }
+.pod-meta { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+
+/* --- mode toggle (YouTube / Podcasts) ----------------------------------- */
+
+.mode-seg {
+  margin-left: auto;
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--panel-bg-faint);
+}
+.mode-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--sans);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding: 0.45rem 0.8rem;
+  background: transparent;
+  color: var(--text-mute);
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.mode-seg button:hover { color: var(--text-high); background: var(--hover-bg); }
+.mode-seg button.active { background: var(--chive); color: var(--on-accent); }
+.mode-seg button:focus-visible { outline: 2px solid var(--blossom); outline-offset: -2px; }
+
+/* YouTube-only controls hide in podcast mode */
+[data-mode="podcast"] .youtube-only { display: none !important; }
+
+.qchip-pod { color: var(--blossom); border-color: var(--blossom); }
 
 /* --- advanced filters panel --------------------------------------------- */
 

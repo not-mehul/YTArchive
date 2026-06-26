@@ -182,6 +182,68 @@ class DownloadedIdsTests(unittest.TestCase):
         self.assertNotIn("zzzZZZ99999", ids)     # .part is in-progress, ignored
 
 
+_RSS = b"""<?xml version="1.0"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+<channel><title>Test Pod</title>
+<image><url>http://art/show.jpg</url></image>
+<item><title>Ep 1: Hello</title><guid>g1</guid>
+<pubDate>Tue, 10 Jun 2025 10:00:00 GMT</pubDate>
+<itunes:duration>1:02:03</itunes:duration>
+<enclosure url="http://cdn/ep1.mp3" type="audio/mpeg" length="123"/></item>
+<item><title>Ep 2: World</title><guid>g2</guid><itunes:duration>1830</itunes:duration>
+<enclosure url="http://cdn/ep2.m4a" type="audio/x-m4a" length="456"/></item>
+</channel></rss>"""
+
+_ITUNES = json.dumps({"results": [
+    {"collectionName": "Test Pod", "artistName": "Auth", "feedUrl": "http://feed",
+     "artworkUrl600": "http://art.jpg", "trackCount": 42, "primaryGenreName": "Tech"},
+    {"collectionName": "No Feed"},  # dropped — no feedUrl
+]}).encode()
+
+
+class PodcastTests(unittest.TestCase):
+    def test_search_podcasts(self):
+        with mock.patch.object(server, "_http_get", return_value=_ITUNES):
+            shows = server.search_podcasts("x")
+        self.assertEqual(len(shows), 1)
+        self.assertEqual(shows[0]["name"], "Test Pod")
+        self.assertEqual(shows[0]["feed_url"], "http://feed")
+
+    def test_fetch_episodes(self):
+        with mock.patch.object(server, "_http_get", return_value=_RSS):
+            r = server.fetch_episodes("http://feed", page=1)
+        self.assertEqual(r["podcast"], "Test Pod")
+        self.assertEqual(r["total"], 2)
+        eps = {v["title"]: v for v in r["videos"]}
+        self.assertEqual(eps["Ep 1: Hello"]["duration"], 3723)   # 1:02:03
+        self.assertEqual(eps["Ep 2: World"]["duration"], 1830)
+        self.assertEqual(eps["Ep 1: Hello"]["url"], "http://cdn/ep1.mp3")
+        self.assertEqual(eps["Ep 1: Hello"]["collection"], "Test Pod")
+
+    def test_fetch_episodes_title_filter(self):
+        with mock.patch.object(server, "_http_get", return_value=_RSS):
+            r = server.fetch_episodes("http://feed", page=1, query="world")
+        self.assertEqual(r["total"], 1)
+        self.assertEqual(r["videos"][0]["title"], "Ep 2: World")
+
+    def test_safe_segment(self):
+        self.assertEqual(server._safe_segment("A/B: 100%"), "AB 100")
+        self.assertEqual(server._safe_segment(""), "untitled")
+
+    def test_podcast_command_has_no_format(self):
+        it = server.QueueItem(id="x", video_id="g1", url="http://cdn/ep1.mp3",
+                              title="Ep 1: Hello", thumbnail=None, duration=10,
+                              quality="1080p", sponsorblock=[], source="podcast",
+                              collection="Test Pod")
+        cmd = server.manager._build_podcast_command(it)
+        self.assertNotIn("-f", cmd)
+        self.assertNotIn("--sponsorblock-remove", cmd)
+        self.assertEqual(cmd[-1], "http://cdn/ep1.mp3")
+        out = cmd[cmd.index("-o") + 1]
+        self.assertIn("Test Pod", out)
+        self.assertIn("Ep 1 Hello", out)  # ':' sanitised out
+
+
 class ByteHelperTests(unittest.TestCase):
     def test_human_bytes(self):
         self.assertEqual(server._human_bytes(1536), "1.5 KiB")

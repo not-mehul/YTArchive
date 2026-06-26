@@ -87,10 +87,20 @@ YTARCHIVE_HOST=127.0.0.1 YTARCHIVE_PORT=8765 python3 server.py
    size, ETA). Each row has a **log** button to inspect the full yt-dlp output;
    failed items can be diagnosed without re-running in a terminal.
 
-> **Beyond YouTube.** This started as a YouTube channel archiver and is being
-> generalised into a broader archival tool (podcasts, music, …). The bridge
-> already drives `yt-dlp`, which supports many sources; source-specific
-> features (SponsorBlock, Shorts) are scoped to YouTube.
+### Podcasts
+
+Flip the **YouTube / Podcasts** toggle in the Source header to archive audio
+podcasts with the same flow. Search a show by name (via the free Apple/iTunes
+podcast directory), pick it, and its episodes load into the same grid — click
+an episode to queue it, or **Queue all** to grab the entire feed. Episodes are
+the show's RSS audio enclosures, downloaded as-is by yt-dlp's generic extractor
+into `…/<Podcast>/<Episode>.<ext>`, reusing the whole queue/progress/stats
+machinery. Already-downloaded episodes are grayed out, just like videos.
+
+> **Beyond YouTube.** This started as a YouTube channel archiver and is becoming
+> a broader archival tool — YouTube and podcasts today, more sources to come.
+> Source-specific features (SponsorBlock, Shorts) stay scoped to YouTube; the
+> bridge drives `yt-dlp`, which supports many sources.
 
 ## How it works
 

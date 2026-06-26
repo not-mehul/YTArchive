@@ -36,6 +36,8 @@ const INDETERMINATE_MESSAGES = new Set([
 ]);
 
 const state = {
+  mode: "youtube",    // youtube | podcast
+  podcast: null,      // { name, feed_url, artwork } once a show is picked
   channelUrl: "",
   page: 1,
   totalPages: null,   // set when a filtered scrape reports it
@@ -311,16 +313,172 @@ async function scrape() {
   await loadPage();
 }
 
+// ---------- youtube ⇄ podcast mode ----------
+
+function setMode(mode) {
+  mode = mode === "podcast" ? "podcast" : "youtube";
+  state.mode = mode;
+  state.podcast = null;
+  state.videos = [];
+  state.page = 1;
+  state.filter = "";
+  document.documentElement.dataset.mode = mode;
+  const seg = $("#mode-seg");
+  if (seg) seg.querySelectorAll("button").forEach((b) => {
+    const on = b.dataset.mode === mode;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  const input = $("#channel-url");
+  if (input) {
+    input.value = "";
+    input.placeholder = mode === "podcast"
+      ? "Search podcasts by name…"
+      : "URL, @handle, or a channel name to search…";
+  }
+  const gf = $("#grid-filter");
+  if (gf) {
+    gf.value = "";
+    gf.placeholder = mode === "podcast" ? "Search episode titles…" : "Search titles across the whole channel…";
+  }
+  const sp = $("#select-page");
+  if (sp) sp.title = mode === "podcast" ? "Queue every episode of this podcast" : "Queue every video on this page";
+  $("#src-title").textContent = mode === "podcast" ? "Find a podcast" : "Channel or playlist";
+  $("#scrape-hint").textContent = mode === "podcast"
+    ? "Search a podcast, pick a show, then click episodes to queue them — or queue the whole feed."
+    : "Paste a channel/playlist URL or an @handle, or type a name to search. Click a thumbnail to queue it.";
+  hideChannelResults();
+  $("#channel-meta").hidden = true;
+  $("#grid-section").hidden = true;
+}
+
+function submitSource() {
+  return state.mode === "podcast" ? podcastSearch() : scrape();
+}
+
+function loadCurrent() {
+  return state.mode === "podcast" ? loadEpisodes() : loadPage();
+}
+
+async function podcastSearch() {
+  const q = $("#channel-url").value.trim();
+  if (!q) { toast("Type a podcast name to search.", "notice"); return; }
+  state.podcast = null;
+  $("#grid-section").hidden = true;
+  $("#channel-meta").hidden = true;
+  const box = $("#channel-results");
+  box.hidden = false;
+  box.innerHTML = "";
+  box.appendChild(el("p", { class: "muted channel-results-note" }, `Searching podcasts for “${q}”…`));
+  const btn = $("#scrape-btn");
+  btn.disabled = true;
+  try {
+    const data = await api("/api/podcast/search", { method: "POST", body: JSON.stringify({ query: q }) });
+    showPodcastResults(data.shows || []);
+  } catch (err) {
+    box.innerHTML = "";
+    box.appendChild(el("p", { class: "muted channel-results-note" }, err.message || "Search failed."));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showPodcastResults(shows) {
+  const box = $("#channel-results");
+  box.hidden = false;
+  box.innerHTML = "";
+  if (!shows.length) {
+    box.appendChild(el("p", { class: "muted channel-results-note" }, "No podcasts found. Try a different name."));
+    return;
+  }
+  box.appendChild(el("p", { class: "muted channel-results-note" }, "Pick a podcast:"));
+  for (const s of shows) {
+    const art = s.artwork
+      ? el("img", { class: "pod-art", src: s.artwork, alt: "", loading: "lazy" })
+      : el("span", { class: "pod-art pod-art-blank" });
+    box.appendChild(el("button", {
+      type: "button", class: "channel-result podcast-result",
+      onclick: () => openPodcast(s),
+    }, [
+      art,
+      el("span", { class: "pod-meta" }, [
+        el("span", { class: "channel-result-name" }, s.name),
+        el("span", { class: "channel-result-url" },
+          [s.author, s.episode_count ? `· ${s.episode_count} episodes` : ""].filter(Boolean).join(" ")),
+      ]),
+    ]));
+  }
+}
+
+function openPodcast(show) {
+  state.podcast = { name: show.name, feed_url: show.feed_url, artwork: show.artwork };
+  state.page = 1;
+  state.filter = "";
+  $("#grid-filter").value = "";
+  hideChannelResults();
+  loadEpisodes();
+}
+
+async function loadEpisodes() {
+  if (!state.podcast) return;
+  const hint = $("#scrape-hint");
+  const prevHint = hint ? hint.textContent : "";
+  if (hint) hint.textContent = `Loading “${state.podcast.name}”…`;
+  try {
+    const data = await api("/api/podcast/episodes", {
+      method: "POST",
+      body: JSON.stringify({
+        feed_url: state.podcast.feed_url,
+        page: state.page,
+        query: state.filter.trim() || undefined,
+      }),
+    });
+    if (typeof data.page === "number") state.page = data.page;
+    state.videos = data.videos || [];
+    for (const v of state.videos) state.videoById.set(v.video_id, v);
+    state.filtered = true;
+    state.totalPages = data.total_pages || 1;
+    renderMeta({ ...data, filtered: true });
+    renderGrid();
+    $("#shorts-skip-note").textContent = "";
+    $("#channel-meta").hidden = false;
+    $("#grid-section").hidden = false;
+    if (hint) hint.textContent = `Browsing “${state.podcast.name}” — click an episode to queue it, or use Queue all.`;
+  } catch (err) {
+    if (hint) hint.textContent = prevHint;
+    toast(err.message || "Could not load episodes.", "error");
+  }
+}
+
+async function queueWholePodcast() {
+  if (!state.podcast) return;
+  try {
+    const data = await api("/api/podcast/episodes", {
+      method: "POST",
+      body: JSON.stringify({ feed_url: state.podcast.feed_url, page: 1, page_size: 5000 }),
+    });
+    const eps = (data.videos || []).filter((v) => !v.downloaded && !state.queuedIds.has(v.video_id));
+    if (!eps.length) { toast("Every episode is already downloaded or queued.", "notice"); return; }
+    for (const v of eps) { state.queuedIds.add(v.video_id); markCard(v.video_id, true); }
+    updateSelectedCount();
+    const r = await api("/api/queue/add", { method: "POST", body: queueAddBody(eps.map(videoPayload)) });
+    toast(`Queued ${r.count || 0} episode${(r.count || 0) === 1 ? "" : "s"}.`);
+  } catch (err) { toast(err.message, "error"); }
+}
+
 function videoPayload(v) {
-  return {
+  const p = {
     video_id: v.video_id, url: v.url, title: v.title,
     thumbnail: v.thumbnail, duration: v.duration,
   };
+  if (v.collection) p.collection = v.collection;
+  return p;
 }
 
 function queueAddBody(videos) {
   return JSON.stringify({
     videos,
+    source: state.mode,
     quality: state.quality,
     sponsorblock: Array.from(state.sponsorblock),
     sponsorblock_mode: state.sbMode,
@@ -388,9 +546,13 @@ function renderMeta(data) {
   }
   const count = $("#filter-count");
   if (count) {
-    count.textContent = data.filtered
-      ? `${data.total} match${data.total === 1 ? "" : "es"}${data.capped ? " (first 2000)" : ""}`
-      : "";
+    if (state.mode === "podcast" && data.total != null) {
+      count.textContent = `${data.total} episode${data.total === 1 ? "" : "s"}`;
+    } else {
+      count.textContent = data.filtered
+        ? `${data.total} match${data.total === 1 ? "" : "es"}${data.capped ? " (first 2000)" : ""}`
+        : "";
+    }
   }
 }
 
@@ -405,8 +567,9 @@ function renderGrid() {
   const items = visibleVideos();
   if (!items.length) {
     $("#grid-empty").hidden = false;
-    $("#grid-empty").querySelector("p").textContent =
-      state.filter.trim() || state.filtered ? "No matches in this channel." : "No videos on this page.";
+    $("#grid-empty").querySelector("p").textContent = state.mode === "podcast"
+      ? "No episodes match."
+      : (state.filter.trim() || state.filtered ? "No matches in this channel." : "No videos on this page.");
     return;
   }
   $("#grid-empty").hidden = true;
@@ -496,6 +659,7 @@ function markCard(videoId, on) {
 }
 
 async function selectPage() {
+  if (state.mode === "podcast") return queueWholePodcast();
   const toAdd = visibleVideos().filter((v) => !state.queuedIds.has(v.video_id) && !v.downloaded);
   if (!toAdd.length) { toast("Nothing new to queue on this page.", "notice"); return; }
   for (const v of toAdd) { state.queuedIds.add(v.video_id); markCard(v.video_id, true); }
@@ -861,8 +1025,12 @@ function renderQItem(it) {
 
   const meta = el("div", { class: "qmeta" });
   meta.appendChild(el("span", { class: `qstatus ${it.status}` }, [statusIcon(it.status), statusLabel(it)]));
-  meta.appendChild(el("span", { class: "qchip" }, qualityLabel(it.quality)));
-  if (it.status === "pending" && it.sponsorblock && it.sponsorblock.length) {
+  if (it.source === "podcast") {
+    meta.appendChild(el("span", { class: "qchip qchip-pod" }, "Podcast"));
+  } else {
+    meta.appendChild(el("span", { class: "qchip" }, qualityLabel(it.quality)));
+  }
+  if (it.source !== "podcast" && it.status === "pending" && it.sponsorblock && it.sponsorblock.length) {
     const n = it.sponsorblock.length;
     meta.appendChild(el("span", { class: "qchip", title: it.sponsorblock.join(", ") },
       `SponsorBlock · ${n} categor${n === 1 ? "y" : "ies"}`));
@@ -1330,24 +1498,28 @@ function initTheme() {
 // ---------- bindings ----------
 
 function bind() {
-  $("#scrape-form").addEventListener("submit", (e) => { e.preventDefault(); scrape(); });
+  $("#scrape-form").addEventListener("submit", (e) => { e.preventDefault(); submitSource(); });
+  const modeSeg = $("#mode-seg");
+  if (modeSeg) modeSeg.querySelectorAll("button").forEach((b) => {
+    b.addEventListener("click", () => setMode(b.dataset.mode));
+  });
   $("#ignore-shorts").addEventListener("change", (e) => {
     state.ignoreShorts = e.target.checked;
     if (state.channelUrl) loadPage();
   });
-  $("#prev-page").addEventListener("click", () => { if (state.page > 1) { state.page--; loadPage(); } });
-  $("#next-page").addEventListener("click", () => { state.page++; loadPage(); });
+  $("#prev-page").addEventListener("click", () => { if (state.page > 1) { state.page--; loadCurrent(); } });
+  $("#next-page").addEventListener("click", () => { state.page++; loadCurrent(); });
   $("#select-page").addEventListener("click", selectPage);
   $("#clear-selection").addEventListener("click", clearPageSelection);
 
-  // Whole-channel title search (debounced — each change re-scrapes).
+  // Title search (debounced) — whole-channel for YouTube, this feed for podcasts.
   let filterTimer = null;
   const filterInput = $("#grid-filter");
   if (filterInput) {
     filterInput.addEventListener("input", (e) => {
       state.filter = e.target.value;
       clearTimeout(filterTimer);
-      filterTimer = setTimeout(() => { state.page = 1; loadPage(); }, 350);
+      filterTimer = setTimeout(() => { state.page = 1; loadCurrent(); }, 350);
     });
   }
 
@@ -1574,6 +1746,7 @@ function freshEmptyLine() {
 
 function init() {
   initTheme();
+  document.documentElement.dataset.mode = state.mode;
   renderSponsorBlock();
   renderSbMode();
   renderSubtitlesPanel();

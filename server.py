@@ -22,10 +22,12 @@ import time
 import uuid
 import importlib.util
 from collections import deque
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
@@ -133,6 +135,14 @@ LOG_MAX_LINES = 600
 # detect already-downloaded videos by scanning the destination tree.
 _DL_ID_RE = re.compile(r"\[([0-9A-Za-z_-]{11})\]")
 
+# --- Podcasts -------------------------------------------------------------
+# Search via the free Apple/iTunes podcast directory; episodes come from each
+# show's RSS feed (parsed with feedparser). Episodes are plain audio enclosures
+# downloaded by yt-dlp's generic extractor — same queue/progress machinery.
+ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+PODCAST_PAGE_SIZE = 50
+_HTTP_UA = "Mozilla/5.0 (compatible; Chive/1.0; +local archival)"
+
 # yt-dlp supports cookies via --cookies-from-browser. Whitelist the values it
 # accepts so the UI can offer a closed dropdown rather than free text.
 COOKIE_BROWSERS = (
@@ -218,6 +228,8 @@ class QueueItem:
     quality: str
     sponsorblock: list[str]
     sponsorblock_mode: str = "remove"  # remove | mark
+    source: str = "youtube"            # youtube | podcast
+    collection: str | None = None      # podcast/show name → destination subfolder
     status: str = "pending"  # pending | downloading | paused | completed | failed | cancelled
     progress: float = 0.0
     speed: str | None = None
@@ -371,6 +383,8 @@ class QueueManager:
                         quality=str(raw.get("quality") or self._last_quality),
                         sponsorblock=[c for c in (raw.get("sponsorblock") or []) if c in SPONSORBLOCK_CATEGORIES],
                         sponsorblock_mode=(raw.get("sponsorblock_mode") if raw.get("sponsorblock_mode") in SPONSORBLOCK_MODES else "remove"),
+                        source=("podcast" if raw.get("source") == "podcast" else "youtube"),
+                        collection=raw.get("collection"),
                         status=str(raw.get("status") or "pending"),
                         progress=float(raw.get("progress") or 0.0),
                         speed=raw.get("speed"),
@@ -564,9 +578,11 @@ class QueueManager:
         quality: str,
         sponsorblock: list[str],
         sb_mode: str = "remove",
+        source: str = "youtube",
     ) -> list[QueueItem]:
         if quality not in QUALITY_PRESETS:
             raise ValueError(f"unknown quality preset: {quality}")
+        source = "podcast" if source == "podcast" else "youtube"
         clean_sb = [c for c in sponsorblock if c in SPONSORBLOCK_CATEGORIES]
         sb_mode = sb_mode if sb_mode in SPONSORBLOCK_MODES else "remove"
         added: list[QueueItem] = []
@@ -587,13 +603,15 @@ class QueueManager:
                 item = QueueItem(
                     id=str(uuid.uuid4()),
                     video_id=vid,
-                    url=v.get("url") or f"https://www.youtube.com/watch?v={vid}",
+                    url=v.get("url") or (f"https://www.youtube.com/watch?v={vid}" if source == "youtube" else vid),
                     title=v.get("title") or vid,
                     thumbnail=v.get("thumbnail"),
                     duration=v.get("duration"),
                     quality=quality,
-                    sponsorblock=clean_sb,
+                    sponsorblock=([] if source == "podcast" else clean_sb),
                     sponsorblock_mode=sb_mode,
+                    source=source,
+                    collection=(v.get("collection") if source == "podcast" else None),
                 )
                 self._items[item.id] = item
                 self._order.append(item.id)
@@ -602,7 +620,8 @@ class QueueManager:
         for item in added:
             self._broadcast({"type": "queued", "item": asdict(item)})
         if added:
-            self.remember_choices(quality, clean_sb, sb_mode)
+            if source == "youtube":
+                self.remember_choices(quality, clean_sb, sb_mode)
             self._persist()
             self._wake.set()
         return added
@@ -747,6 +766,20 @@ class QueueManager:
             pass
         ids |= self._scan_disk_ids(dl_dir)
         return ids
+
+    def podcast_downloaded(self, collection: str, titles: list[str]) -> set[str]:
+        """Which of `titles` already have a file under <dir>/<show>/. Episode
+        files are saved as "<safe title>.<ext>", so we match sanitised stems."""
+        folder = self._download_dir / _safe_segment(collection or "Podcasts")
+        stems: set[str] = set()
+        try:
+            if folder.is_dir():
+                for p in folder.iterdir():
+                    if p.is_file() and p.suffix.lower() not in (".part", ".ytdl", ".temp"):
+                        stems.add(p.stem)
+        except OSError:
+            pass
+        return {t for t in titles if _safe_segment(t) in stems}
 
     def _scan_disk_ids(self, dl_dir: Path) -> set[str]:
         now = time.time()
@@ -1077,26 +1110,24 @@ class QueueManager:
         "%(progress.status)s|%(info.ext)s"
     )
 
+    def _cmd_prefix(self, out_template: str) -> list[str]:
+        """Shared yt-dlp invocation: the flushing API wrapper when available
+        (the only thing that streams progress on Windows), else the binary +
+        --progress-template. Both yield the same "[YTPROG]" lines we parse."""
+        runner = _ytdlp_runner_cmd()
+        cmd = list(runner) if runner is not None else list(_ytdlp_base() or ["yt-dlp"])
+        cmd += ["--newline", "--no-colors", "--no-playlist"]
+        if runner is None:
+            cmd += ["--progress-template", self._PROGRESS_TPL]
+        cmd += ["-o", out_template, "--print", "after_move:filepath:%(filepath)s"]
+        return cmd
+
     def _build_command(self, item: QueueItem) -> list[str]:
+        if item.source == "podcast":
+            return self._build_podcast_command(item)
         preset = QUALITY_PRESETS[item.quality]
         out_template = str(self._download_dir / "%(uploader)s/%(title)s [%(id)s].%(ext)s")
-        # Prefer the flushing API wrapper (ytdlp_runner.py) — it is the only way
-        # progress streams on Windows. Only the binary fallback needs
-        # --progress-template; both yield the same "[YTPROG]" lines we parse.
-        runner = _ytdlp_runner_cmd()
-        if runner is not None:
-            cmd: list[str] = list(runner)
-            use_template = False
-        else:
-            cmd = list(_ytdlp_base() or ["yt-dlp"])
-            use_template = True
-        cmd += ["--newline", "--no-colors", "--no-playlist"]
-        if use_template:
-            cmd += ["--progress-template", self._PROGRESS_TPL]
-        cmd += [
-            "-o", out_template,
-            "--print", "after_move:filepath:%(filepath)s",
-        ]
+        cmd = self._cmd_prefix(out_template)
         with self._lock:
             audio_only = bool(preset.get("audio_only"))
             if audio_only:
@@ -1139,6 +1170,25 @@ class QueueManager:
             if self._use_archive:
                 archive_path = self._download_dir / "archive.txt"
                 cmd += ["--download-archive", str(archive_path)]
+            if self._cookies_browser:
+                cmd += ["--cookies-from-browser", self._cookies_browser]
+            elif self._cookies_file:
+                cmd += ["--cookies", self._cookies_file]
+        cmd.append(item.url)
+        return cmd
+
+    def _build_podcast_command(self, item: QueueItem) -> list[str]:
+        # A podcast episode is a plain audio enclosure: download it as-is (no
+        # format selection / SponsorBlock / merge) into <dir>/<show>/<episode>.
+        # The title/show are literals we already know, so we sanitise them
+        # ourselves rather than relying on the generic extractor's metadata.
+        safe_show = _safe_segment(item.collection or "Podcasts")
+        safe_title = _safe_segment(item.title)
+        out = str(self._download_dir / safe_show / (safe_title + ".%(ext)s"))
+        cmd = self._cmd_prefix(out)
+        with self._lock:
+            if self._embed_metadata:
+                cmd += ["--embed-metadata"]
             if self._cookies_browser:
                 cmd += ["--cookies-from-browser", self._cookies_browser]
             elif self._cookies_file:
@@ -1716,6 +1766,144 @@ def search_channels(query: str, limit: int = 6) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Podcasts
+# ---------------------------------------------------------------------------
+
+_FS_BAD = re.compile(r'[<>:"/\\|?*%\x00-\x1f]')
+
+
+def _safe_segment(name: str) -> str:
+    """A filesystem-safe path segment for a podcast show/episode. Also strips
+    `%` so it is safe to use as literal text in a yt-dlp output template."""
+    s = _FS_BAD.sub("", name or "")
+    s = re.sub(r"\s+", " ", s).strip().strip(".")
+    return s[:120] or "untitled"
+
+
+def _http_get(url: str, timeout: int = 30) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": _HTTP_UA, "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _parse_pod_duration(raw: Any) -> int | None:
+    """iTunes durations come as seconds ("3600") or clock strings ("1:02:03")."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    parts = s.split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return None
+    secs = 0
+    for n in nums:
+        secs = secs * 60 + n
+    return secs
+
+
+def search_podcasts(term: str, limit: int = 12) -> list[dict[str, Any]]:
+    """Search the Apple/iTunes podcast directory (free, no key)."""
+    q = urlencode({"term": term, "media": "podcast", "entity": "podcast", "limit": limit})
+    try:
+        data = json.loads(_http_get(f"{ITUNES_SEARCH_URL}?{q}", timeout=20))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise RuntimeError(f"podcast search failed: {exc}")
+    shows: list[dict[str, Any]] = []
+    for r in data.get("results", []):
+        feed = r.get("feedUrl")
+        if not feed:
+            continue
+        shows.append({
+            "name": r.get("collectionName") or r.get("trackName") or "Podcast",
+            "author": r.get("artistName"),
+            "feed_url": feed,
+            "artwork": r.get("artworkUrl600") or r.get("artworkUrl100"),
+            "episode_count": r.get("trackCount"),
+            "genre": r.get("primaryGenreName"),
+        })
+    return shows
+
+
+_ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
+
+
+def _rss_date(raw: str | None) -> str | None:
+    """RFC-822 pubDate → compact YYYYMMDD (matches the YouTube card format)."""
+    if not raw:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(raw)
+        return dt.strftime("%Y%m%d") if dt else None
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def fetch_episodes(feed_url: str, page: int, page_size: int = PODCAST_PAGE_SIZE,
+                   query: str | None = None) -> dict[str, Any]:
+    """Parse a podcast RSS feed and return one page of episodes, shaped like the
+    scrape result (so the UI grid renders them the same way). Uses the stdlib
+    XML parser — podcast feeds are standard RSS 2.0, no third-party dep needed."""
+    import xml.etree.ElementTree as ET
+    try:
+        raw = _http_get(feed_url, timeout=30)
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"could not fetch feed: {exc}")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise RuntimeError(f"could not parse feed: {exc}")
+    channel = root.find("channel")
+    if channel is None:
+        raise RuntimeError("that doesn't look like a podcast RSS feed")
+    show = (channel.findtext("title") or "").strip() or "Podcast"
+    show_image = None
+    img = channel.find("image")
+    if img is not None:
+        show_image = (img.findtext("url") or "").strip() or None
+    if not show_image:
+        it_img = channel.find(f"{{{_ITUNES_NS}}}image")
+        if it_img is not None:
+            show_image = it_img.get("href")
+    episodes: list[dict[str, Any]] = []
+    for item in channel.findall("item"):
+        enc = item.find("enclosure")
+        url = enc.get("url") if enc is not None else None
+        if not url:
+            continue
+        ep_img = item.find(f"{{{_ITUNES_NS}}}image")
+        thumb = ep_img.get("href") if ep_img is not None else show_image
+        episodes.append({
+            "video_id": (item.findtext("guid") or "").strip() or url,
+            "url": url,
+            "title": (item.findtext("title") or "Episode").strip(),
+            "thumbnail": thumb,
+            "duration": _parse_pod_duration(item.findtext(f"{{{_ITUNES_NS}}}duration")),
+            "upload_date": _rss_date(item.findtext("pubDate")),
+            "collection": show,
+        })
+    if query:
+        ql = query.lower()
+        episodes = [v for v in episodes if ql in v["title"].lower()]
+    total = len(episodes)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    window = episodes[start:start + page_size]
+    return {
+        "podcast": show, "artwork": show_image, "feed_url": feed_url,
+        "videos": window, "page": page, "page_size": page_size,
+        "count": len(window), "total": total, "total_pages": total_pages,
+        "source": "podcast",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
 
@@ -1784,6 +1972,40 @@ def api_search() -> Response:
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify({"channels": channels})
+
+
+@app.route("/api/podcast/search", methods=["POST"])
+def api_podcast_search() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    query = (data.get("query") or "").strip()
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+    try:
+        shows = search_podcasts(query)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"shows": shows})
+
+
+@app.route("/api/podcast/episodes", methods=["POST"])
+def api_podcast_episodes() -> Response:
+    data = request.get_json(force=True, silent=True) or {}
+    feed = (data.get("feed_url") or "").strip()
+    if not feed:
+        return jsonify({"error": "feed_url is required"}), 400
+    page = int(data.get("page", 1) or 1)
+    page_size = min(max(int(data.get("page_size", PODCAST_PAGE_SIZE) or PODCAST_PAGE_SIZE), 1), 5000)
+    query = (data.get("query") or "").strip() or None
+    try:
+        result = fetch_episodes(feed, page=page, page_size=page_size, query=query)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    # Flag episodes already on disk so the UI can gray them out.
+    titles = [v["title"] for v in result["videos"]]
+    have = manager.podcast_downloaded(result["podcast"], titles)
+    for v in result["videos"]:
+        v["downloaded"] = v["title"] in have
+    return jsonify(result)
 
 
 @app.route("/api/scrape", methods=["POST"])
@@ -1869,10 +2091,11 @@ def api_queue_add() -> Response:
     quality = data.get("quality") or "1080p"
     sponsorblock = data.get("sponsorblock") or []
     sb_mode = data.get("sponsorblock_mode") or "remove"
+    source = data.get("source") or "youtube"
     if not isinstance(videos, list) or not videos:
         return jsonify({"error": "videos must be a non-empty list"}), 400
     try:
-        added = manager.add(videos, quality, sponsorblock, sb_mode=sb_mode)
+        added = manager.add(videos, quality, sponsorblock, sb_mode=sb_mode, source=source)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"added": [asdict(i) for i in added], "count": len(added)})

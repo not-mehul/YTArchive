@@ -69,6 +69,16 @@
       <div class="section-head">
         <span class="marker">Source.</span>
         <h2 id="src-title" class="section-title">Channel or playlist</h2>
+        <div class="mode-seg" role="radiogroup" aria-label="What to archive" id="mode-seg">
+          <button type="button" role="radio" data-mode="youtube" class="active" aria-checked="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m10 9 5 3-5 3z" fill="currentColor" stroke="none"/></svg>
+            YouTube
+          </button>
+          <button type="button" role="radio" data-mode="podcast" aria-checked="false">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            Podcasts
+          </button>
+        </div>
       </div>
       <form id="scrape-form" class="source-row" autocomplete="off">
         <input
@@ -86,7 +96,7 @@
         </button>
       </form>
       <div class="channel-results" id="channel-results" hidden></div>
-      <div class="source-options">
+      <div class="source-options youtube-only">
         <label class="check" for="ignore-shorts">
           <input type="checkbox" id="ignore-shorts" checked />
           <span class="box">
@@ -147,7 +157,7 @@
             placeholder="Search titles across the whole channel…"
           />
         </div>
-        <label class="sort-control">
+        <label class="sort-control youtube-only">
           <span class="sort-label">Sort</span>
           <select id="sort-select" aria-label="Sort order">
             <option value="newest">Newest</option>
@@ -158,13 +168,13 @@
             <option value="least_viewed">Least viewed</option>
           </select>
         </label>
-        <button type="button" class="btn btn-ghost" id="toggle-filters">
+        <button type="button" class="btn btn-ghost youtube-only" id="toggle-filters">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"></path></svg>
           Filters
         </button>
         <span class="filter-count mono" id="filter-count"></span>
       </div>
-      <div class="advanced-filters" id="advanced-filters" hidden>
+      <div class="advanced-filters youtube-only" id="advanced-filters" hidden>
         <div class="filter-grid">
           <div class="filter-field">
             <span class="label">Duration · seconds</span>
