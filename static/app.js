@@ -814,6 +814,10 @@ async function checkHealth() {
 }
 
 function renderEngineStrip(h) {
+  if (h.version) {
+    const av = $("#app-version");
+    if (av) av.textContent = "v" + h.version;
+  }
   const yv = $("#ytdlp-ver");
   const fv = $("#ffmpeg-ver");
   if (yv) {

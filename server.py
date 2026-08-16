@@ -36,12 +36,32 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 # Configuration
 # ---------------------------------------------------------------------------
 
+__version__ = "1.0.0"
+
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
+
+
+def _env(name: str) -> str | None:
+    """Read a CHIVE_<name> setting, falling back to the legacy YTARCHIVE_<name>."""
+    return os.environ.get(f"CHIVE_{name}") or os.environ.get(f"YTARCHIVE_{name}")
+
+
+def _default_state_dir() -> Path:
+    """~/.chive by default; keep using an existing ~/.ytarchive from an earlier
+    install so upgrades don't orphan a user's queue and settings."""
+    override = _env("STATE_DIR")
+    if override:
+        return Path(override)
+    chive = Path.home() / ".chive"
+    legacy = Path.home() / ".ytarchive"
+    return legacy if (legacy.exists() and not chive.exists()) else chive
+
+
 DEFAULT_DOWNLOAD_DIR = ROOT / "downloads"
 DEFAULT_DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-STATE_DIR = Path(os.environ.get("YTARCHIVE_STATE_DIR") or (Path.home() / ".ytarchive"))
+STATE_DIR = _default_state_dir()
 STATE_FILE = STATE_DIR / "state.json"
 STATE_VERSION = 1
 HISTORY_MAX = 10
@@ -50,13 +70,13 @@ SCRAPE_PAGE_SIZE = 50
 
 
 def _env_truthy(name: str) -> bool:
-    return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return (_env(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-# When YTARCHIVE_DEBUG is set, every download's raw yt-dlp output is written —
+# When CHIVE_DEBUG is set, every download's raw yt-dlp output is written —
 # with per-line wall-clock offsets — to STATE_DIR/logs so streaming cadence and
 # the exact line format can be inspected and shared.
-DEBUG = _env_truthy("YTARCHIVE_DEBUG")
+DEBUG = _env_truthy("DEBUG")
 DOWNLOAD_LOG_DIR = STATE_DIR / "logs"
 
 IS_WINDOWS = os.name == "nt"
@@ -1938,6 +1958,7 @@ def health() -> Response:
         pass
     return jsonify({
         "ok": True,
+        "version": __version__,
         "yt_dlp": _ytdlp_available(),
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "yt_dlp_version": _ytdlp_version(),
@@ -2286,9 +2307,9 @@ def api_events() -> Response:
 
 
 def main() -> None:
-    host = os.environ.get("YTARCHIVE_HOST", "127.0.0.1")
-    port = int(os.environ.get("YTARCHIVE_PORT", "8765"))
-    print(f"\nChive bridge →    http://{host}:{port}")
+    host = _env("HOST") or "127.0.0.1"
+    port = int(_env("PORT") or "8765")
+    print(f"\nChive {__version__} 🌱  →  http://{host}:{port}")
     print(f"State file:       {STATE_FILE}")
     if _ytdlp_runner_cmd() is not None:
         print(f"yt-dlp:           API runner ({_ytdlp_version() or '?'}) — progress streams")

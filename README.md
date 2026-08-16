@@ -2,16 +2,33 @@
 
 **ar·chive** — snip the fluff, keep the good stuff.
 
-A local web app for archiving YouTube channels with SponsorBlock segments cut
-out automatically. Built as a three-tier system:
+![CI](https://github.com/not-mehul/ytarchive/actions/workflows/ci.yml/badge.svg)
+![version](https://img.shields.io/badge/version-1.0.0-84c95c)
+![license](https://img.shields.io/badge/license-MIT-blue)
+
+A local web app for archiving **YouTube channels and podcasts** — with
+SponsorBlock segments cut out automatically. Everything runs on your machine;
+the browser never speaks to YouTube directly, and there's no telemetry.
+
+Built as a three-tier system:
 
 - **Frontend** — a single-page UI in `static/` (HTML + CSS + JS, no build step).
-- **Bridge** — a Python/Flask server in `server.py` that talks to the UI and
-  drives `yt-dlp` subprocesses.
+- **Bridge** — a Python/Flask server in `server.py` (served by waitress) that
+  talks to the UI and drives `yt-dlp`.
 - **Engine** — local `yt-dlp` + `ffmpeg` installations on your `PATH`.
 
-The browser never speaks to YouTube directly; everything routes through
-`http://127.0.0.1:8765`.
+Everything routes through `http://127.0.0.1:8765`.
+
+## Features
+
+- **YouTube** — scrape a channel/playlist or search by name/`@handle`; click a
+  thumbnail to queue; filter & sort the whole channel; SponsorBlock remove/mark;
+  subtitles; quality presets; already-downloaded videos are grayed out.
+- **Podcasts** — search shows, browse episodes, queue one or the whole feed.
+- **Queue** — parallel downloads, live progress/speed/ETA, aggregate stats,
+  pause/resume/cancel/retry, per-item logs, reveal-in-folder.
+- **Design** — an editorial Dusk/Dawn theme, keyboard-accessible, a few easter
+  eggs.
 
 ## Requirements
 
@@ -43,14 +60,14 @@ yt-dlp --version
 ffmpeg -version
 ```
 
-> **Windows: install yt-dlp with pip.** The server prefers running yt-dlp as a
-> module (`python -m yt_dlp`) over the standalone `yt-dlp.exe`, because the
-> frozen Windows binary buffers its progress output and never flushes it —
-> making downloads appear to jump straight from 0% to 100% with no live speed
-> or ETA. `pip install -r requirements.txt` (which now includes `yt-dlp`) into
-> the same environment that runs the server gives you live progress. The
-> Settings → *Engine & storage* panel shows whether the **module** or **binary**
-> is in use.
+> **Windows: install yt-dlp with pip.** When the `yt_dlp` module is importable,
+> Chive drives it through `ytdlp_runner.py` — the Python API plus a flushing
+> progress hook — instead of the standalone `yt-dlp.exe`, whose frozen build
+> buffers its progress output and never flushes it, making downloads appear to
+> jump straight from 0% to 100% with no live speed or ETA. `pip install -r
+> requirements.txt` (which includes `yt-dlp`) into the same environment that
+> runs the server gives you live progress. The Settings → *Engine & storage*
+> panel shows whether the **module** or **binary** is in use.
 
 ## Running
 
@@ -63,11 +80,29 @@ python3 server.py
 
 Then open <http://127.0.0.1:8765>.
 
-Environment overrides (optional):
+### Configuration
+
+All settings have sensible defaults; override any of them with environment
+variables. `CHIVE_*` is the primary prefix; the legacy `YTARCHIVE_*` names
+are still honored as a fallback.
+
+| Variable            | Default       | What it does                          |
+| ------------------- | ------------- | ------------------------------------- |
+| `CHIVE_HOST`        | `127.0.0.1`   | interface the server binds to         |
+| `CHIVE_PORT`        | `8765`        | port the server listens on            |
+| `CHIVE_STATE_DIR`   | `~/.chive`    | where queue/settings/history persist  |
+| `CHIVE_DEBUG`       | off           | set truthy for Flask debug + tracebacks |
 
 ```sh
-YTARCHIVE_HOST=127.0.0.1 YTARCHIVE_PORT=8765 python3 server.py
+CHIVE_HOST=127.0.0.1 CHIVE_PORT=8765 python3 server.py
+
+# Windows (PowerShell):
+$env:CHIVE_PORT="9000"; python server.py
 ```
+
+> **Upgrading from ytarchive?** If a `~/.ytarchive` state directory already
+> exists and `~/.chive` does not, Chive keeps using the old location so your
+> queue and settings carry over untouched.
 
 ## Using it
 
@@ -174,6 +209,11 @@ subtitles), source validation, and the byte helpers.
 - The bridge binds to `127.0.0.1` by default. Don't expose it on a
   public interface — it shells out to `yt-dlp` with user input.
 - Queue, settings, and recent channels persist to
-  `~/.ytarchive/state.json` (override with `YTARCHIVE_STATE_DIR`).
+  `~/.chive/state.json` (override with `CHIVE_STATE_DIR`; a pre-existing
+  `~/.ytarchive` is honored for backward compatibility).
   Interrupted downloads come back as **pending** on next launch and
   resume from the `.part` file when restarted.
+
+## License
+
+[MIT](LICENSE). Contributions welcome.

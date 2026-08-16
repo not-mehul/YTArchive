@@ -906,6 +906,20 @@ input[type="text"]:focus { border-color: var(--text-mute); }
   line-height: 1.6;
 }
 .footer em { font-style: italic; color: var(--text-body); }
+.footer-meta {
+  margin-top: 0.9rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  color: var(--text-decor);
+}
+.footer-meta .brand-mini {
+  font-family: var(--serif);
+  font-size: 0.9375rem;
+  color: var(--cream);
+}
+.footer-meta .mono { color: var(--chive); }
 
 /* --- toast / status ------------------------------------------------------- */
 
